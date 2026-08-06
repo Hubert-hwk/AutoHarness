@@ -4,6 +4,7 @@ import pytest
 import yaml
 
 from autoharness.models import (
+    AgentTrace,
     FailureType,
     Skill,
     SkillHealthBasis,
@@ -11,7 +12,7 @@ from autoharness.models import (
     SkillOutcomeStats,
     SkillQuery,
 )
-from autoharness.registry import SkillRegistry, SkillRegistryError
+from autoharness.registry import SkillRecommender, SkillRegistry, SkillRegistryError
 from autoharness.skills import SkillGenerator
 
 
@@ -92,6 +93,30 @@ def test_registry_supports_cross_failure_search_when_requested(tmp_path: Path) -
 def test_registry_rejects_missing_directory(tmp_path: Path) -> None:
     with pytest.raises(SkillRegistryError, match="not a directory"):
         SkillRegistry(tmp_path / "missing").search(SkillQuery(text="anything"))
+
+
+def test_recommender_context_fingerprint_is_stable_and_context_sensitive(tmp_path: Path) -> None:
+    recommender = SkillRecommender()
+
+    first = recommender.recommend(
+        AgentTrace(task="Investigate unexpected cache behavior"),
+        tmp_path / "missing",
+        allow_missing_directory=True,
+    )
+    repeated = recommender.recommend(
+        AgentTrace(task="Investigate unexpected cache behavior"),
+        tmp_path / "missing",
+        allow_missing_directory=True,
+    )
+    different = recommender.recommend(
+        AgentTrace(task="Investigate unexpected database behavior"),
+        tmp_path / "missing",
+        allow_missing_directory=True,
+    )
+
+    assert len(first.context_fingerprint or "") == 64
+    assert repeated.context_fingerprint == first.context_fingerprint
+    assert different.context_fingerprint != first.context_fingerprint
 
 
 def test_registry_rejects_oversized_skill_as_invalid(tmp_path: Path) -> None:
@@ -359,6 +384,23 @@ def test_skill_outcome_rejects_inconsistent_lift_interval() -> None:
             estimated_lift=0.5,
             estimated_lift_lower_bound=-0.2,
             estimated_lift_upper_bound=0.2,
+        )
+
+
+def test_skill_outcome_rejects_inconsistent_comparison_counts() -> None:
+    with pytest.raises(ValueError, match="comparison exposed observations"):
+        SkillOutcomeStats(
+            skill_name="invalid_comparison",
+            skill_version=1,
+            observations=1,
+            accepted=1,
+            rejected=0,
+            unevaluated_failures=0,
+            post_acceptance_failures=0,
+            posterior_success_rate=0.6,
+            confidence=1 / 6,
+            score_adjustment=0.1,
+            comparison_exposed_observations=1,
         )
 
 

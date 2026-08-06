@@ -2,6 +2,19 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.18.0 - 2026-08-07
+
+- Generate stable SHA-256 Skill context fingerprints from normalized task, diagnosis, and localized
+  code signals without persisting raw task text in candidate metadata.
+- Persist the context fingerprint through recommendations and every AutoFix candidate attempt.
+- Compute controlled Skill evidence only from contexts containing both exposed and withheld runs.
+- Keep unmatched raw outcomes auditable while assigning them zero controlled score and health weight.
+- Preserve unstratified behavior for historical records that predate context fingerprints.
+- Add typed matched-context, no-overlap, and legacy comparison modes plus matched arm statistics.
+- Route matched sample sizes into uncertainty-aware health gates and persist comparison provenance.
+- Add deterministic fingerprint, matched overlap, no-overlap isolation, legacy fallback, AutoFix
+  lifecycle, model-integrity, and ranking regression coverage.
+
 ## 0.17.0 - 2026-08-07
 
 - Compute an approximate 95% uncertainty interval for exposed-versus-control Beta posterior lift.

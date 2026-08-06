@@ -14,6 +14,7 @@ from autoharness.models import (
     FailureType,
     ProviderSelection,
     ProviderSelectionCandidate,
+    SkillComparisonMode,
 )
 
 
@@ -136,6 +137,7 @@ def test_ledger_aggregates_repository_scoped_skill_outcomes(tmp_path: Path) -> N
     assert stats.post_acceptance_failures == 1
     assert stats.posterior_success_rate == 0.5
     assert stats.score_adjustment == 0
+    assert stats.comparison_mode == SkillComparisonMode.LEGACY_UNSTRATIFIED
     assert global_stats[("score_repair", 1)].accepted == 3
 
 
@@ -164,7 +166,7 @@ def test_ledger_estimates_controlled_skill_lift(tmp_path: Path) -> None:
             repository_path=tmp_path,
             patch_sha256=f"{index + 1:064x}",
             failure_type=FailureType.REASONING,
-            metadata={"retrieved_skills": [skill]},
+            metadata={"retrieved_skills": [skill], "skill_context_fingerprint": "a" * 64},
         )
         ledger.transition(exposed.candidate_id, CandidateStatus.VERIFIED)
         control = ledger.propose(
@@ -172,7 +174,7 @@ def test_ledger_estimates_controlled_skill_lift(tmp_path: Path) -> None:
             repository_path=tmp_path,
             patch_sha256=f"{index + 101:064x}",
             failure_type=FailureType.REASONING,
-            metadata={"withheld_skills": [skill]},
+            metadata={"withheld_skills": [skill], "skill_context_fingerprint": "a" * 64},
         )
         ledger.transition(control.candidate_id, CandidateStatus.REJECTED)
 
@@ -191,6 +193,62 @@ def test_ledger_estimates_controlled_skill_lift(tmp_path: Path) -> None:
     assert stats.ablation_confidence == pytest.approx(0.5)
     assert stats.ablation_score_adjustment == pytest.approx(0.556)
     assert stats.score_adjustment == pytest.approx(1.111)
+    assert stats.comparison_mode == SkillComparisonMode.MATCHED_CONTEXT
+    assert stats.matched_contexts == 1
+    assert stats.comparison_exposed_observations == 5
+    assert stats.comparison_control_observations == 5
+
+
+def test_ledger_does_not_compare_nonoverlapping_skill_contexts(tmp_path: Path) -> None:
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    skill = {"name": "isolated_repair", "version": 1}
+    exposed = ledger.propose(
+        title="Context A exposure",
+        repository_path=tmp_path,
+        patch_sha256="a" * 64,
+        failure_type=FailureType.REASONING,
+        metadata={"retrieved_skills": [skill], "skill_context_fingerprint": "a" * 64},
+    )
+    ledger.transition(exposed.candidate_id, CandidateStatus.VERIFIED)
+    control = ledger.propose(
+        title="Context B control",
+        repository_path=tmp_path,
+        patch_sha256="b" * 64,
+        failure_type=FailureType.REASONING,
+        metadata={"withheld_skills": [skill], "skill_context_fingerprint": "b" * 64},
+    )
+    ledger.transition(control.candidate_id, CandidateStatus.REJECTED)
+
+    stats = ledger.skill_outcomes(repository_path=tmp_path)[("isolated_repair", 1)]
+
+    assert stats.observations == 1
+    assert stats.control_observations == 1
+    assert stats.comparison_mode == SkillComparisonMode.NO_CONTEXT_OVERLAP
+    assert stats.matched_contexts == 0
+    assert stats.comparison_exposed_observations == 0
+    assert stats.comparison_control_observations == 0
+    assert stats.estimated_lift == 0
+    assert stats.ablation_score_adjustment == 0
+
+
+def test_ledger_does_not_treat_invalid_context_fingerprints_as_legacy(tmp_path: Path) -> None:
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    skill = {"name": "invalid_context_repair", "version": 1}
+    for index, arm in enumerate(("retrieved_skills", "withheld_skills"), start=1):
+        candidate = ledger.propose(
+            title="Invalid context evidence",
+            repository_path=tmp_path,
+            patch_sha256=f"{index:064x}",
+            failure_type=FailureType.REASONING,
+            metadata={arm: [skill], "skill_context_fingerprint": "invalid"},
+        )
+        ledger.transition(candidate.candidate_id, CandidateStatus.VERIFIED)
+
+    stats = ledger.skill_outcomes(repository_path=tmp_path)[("invalid_context_repair", 1)]
+
+    assert stats.comparison_mode == SkillComparisonMode.NO_CONTEXT_OVERLAP
+    assert stats.comparison_exposed_observations == 0
+    assert stats.comparison_control_observations == 0
 
 
 def test_ledger_deduplicates_skill_evidence_across_autofix_retries(tmp_path: Path) -> None:

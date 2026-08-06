@@ -283,11 +283,15 @@ def test_autofix_records_periodic_skill_ablation_as_control_evidence(tmp_path: P
     )
 
     assert control.recommendation.skills.matches == []
+    assert len(control.recommendation.context_fingerprint or "") == 64
     assert control.recommendation.withheld_skills[0].skill_name == "historical_score_repair"
     assert control.recommendation.withheld_skills[0].experiment_index == 0
     withheld = control.evolution.candidate.metadata["withheld_skills"][0]
     assert withheld["name"] == "historical_score_repair"
     assert withheld["original_rank"] == 1
+    assert control.evolution.candidate.metadata["skill_context_fingerprint"] == (
+        control.recommendation.context_fingerprint
+    )
 
     exposed = pipeline.run(
         _trace(),
@@ -297,12 +301,20 @@ def test_autofix_records_periodic_skill_ablation_as_control_evidence(tmp_path: P
         skill_ablation_interval=0,
     )
     assert exposed.recommendation.skills.matches[0].skill.name == "historical_score_repair"
+    assert exposed.recommendation.context_fingerprint == control.recommendation.context_fingerprint
+    retrieved = exposed.evolution.candidate.metadata["retrieved_skills"][0]
+    assert retrieved["comparison_mode"] == "no_context_overlap"
+    assert retrieved["matched_contexts"] == 0
     stats = ledger.skill_outcomes(repository_path=repository)[("historical_score_repair", 1)]
     assert stats.observations == 1
     assert stats.accepted == 1
     assert stats.control_observations == 1
     assert stats.control_accepted == 1
     assert stats.estimated_lift == 0
+    assert stats.comparison_mode.value == "matched_context"
+    assert stats.matched_contexts == 1
+    assert stats.comparison_exposed_observations == 1
+    assert stats.comparison_control_observations == 1
 
 
 def test_autofix_rotates_skill_ablation_and_preserves_quarantine_probes(tmp_path: Path) -> None:

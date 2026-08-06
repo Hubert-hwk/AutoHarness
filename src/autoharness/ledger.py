@@ -26,6 +26,7 @@ from autoharness.models import (
     ProviderSelection,
     RepairCandidateEvent,
     RepairCandidateRecord,
+    SkillComparisonMode,
     SkillOutcomeStats,
 )
 
@@ -744,8 +745,9 @@ class RepairLedger:
         """Aggregate run-deduplicated exposed and controlled Skill outcomes.
 
         Retrieved Skills provide associative evidence. Periodic holdouts provide a controlled
-        estimate, but concurrent changes can still confound it. Bayesian shrinkage and bounded
-        adjustments keep both signals from overpowering diagnosis and content relevance.
+        estimate only across diagnostic contexts that contain both arms. Legacy records without
+        context fingerprints retain their historical unstratified behavior. Bayesian shrinkage
+        and bounded adjustments keep both signals from overpowering semantic relevance.
         """
         bounded_limit = max(1, min(limit, 50_000))
         conditions: list[str] = []
@@ -801,6 +803,7 @@ class RepairLedger:
                         units[unit_key] = {
                             "outcome": outcome,
                             "post_acceptance_failure": post_acceptance_failure,
+                            "context": self._skill_context_fingerprint(metadata, unit_id),
                         }
                     else:
                         existing_outcome = str(existing["outcome"])
@@ -809,8 +812,26 @@ class RepairLedger:
                         existing["post_acceptance_failure"] = (
                             bool(existing["post_acceptance_failure"]) or post_acceptance_failure
                         )
+                        context = self._skill_context_fingerprint(metadata, unit_id)
+                        if existing["context"] != context:
+                            existing["context"] = None
 
         aggregates: dict[tuple[str, int], dict[str, int]] = {}
+        context_arms: dict[tuple[tuple[str, int], str], set[str]] = {}
+        contextual_skills: set[tuple[str, int]] = set()
+        for (_, key, arm), evidence in units.items():
+            stored_context = evidence["context"]
+            if isinstance(stored_context, str):
+                contextual_skills.add(key)
+                context_arms.setdefault((key, stored_context), set()).add(arm)
+        matched_contexts = {
+            (key, context)
+            for (key, context), arms in context_arms.items()
+            if arms == {"exposed", "control"}
+        }
+        matched_contexts_by_skill: dict[tuple[str, int], set[str]] = {}
+        for key, context in matched_contexts:
+            matched_contexts_by_skill.setdefault(key, set()).add(context)
         for (_, key, arm), evidence in units.items():
             counts = aggregates.setdefault(
                 key,
@@ -822,6 +843,12 @@ class RepairLedger:
                     "control_accepted": 0,
                     "control_rejected": 0,
                     "control_unevaluated_failures": 0,
+                    "comparison_exposed_accepted": 0,
+                    "comparison_exposed_rejected": 0,
+                    "comparison_exposed_unevaluated_failures": 0,
+                    "comparison_control_accepted": 0,
+                    "comparison_control_rejected": 0,
+                    "comparison_control_unevaluated_failures": 0,
                 },
             )
             outcome = str(evidence["outcome"])
@@ -829,6 +856,12 @@ class RepairLedger:
             counts[f"{prefix}{outcome}"] += 1
             if arm == "exposed" and bool(evidence["post_acceptance_failure"]):
                 counts["post_acceptance_failures"] += 1
+            stored_context = evidence["context"]
+            include_comparison = key not in contextual_skills or (
+                isinstance(stored_context, str) and (key, stored_context) in matched_contexts
+            )
+            if include_comparison:
+                counts[f"comparison_{arm}_{outcome}"] += 1
 
         results: dict[tuple[str, int], SkillOutcomeStats] = {}
         for (name, version), counts in aggregates.items():
@@ -841,20 +874,50 @@ class RepairLedger:
             posterior = (counts["accepted"] + 2) / (observations + 4)
             confidence = observations / (observations + 5)
             control_posterior = (counts["control_accepted"] + 2) / (control_observations + 4)
-            control_confidence = control_observations / (control_observations + 5)
-            estimated_lift = posterior - control_posterior
-            exposed_variance = self._beta_posterior_variance(counts["accepted"], observations)
+            comparison_exposed_observations = (
+                counts["comparison_exposed_accepted"]
+                + counts["comparison_exposed_rejected"]
+                + counts["comparison_exposed_unevaluated_failures"]
+            )
+            comparison_control_observations = (
+                counts["comparison_control_accepted"]
+                + counts["comparison_control_rejected"]
+                + counts["comparison_control_unevaluated_failures"]
+            )
+            comparison_exposed_posterior = (counts["comparison_exposed_accepted"] + 2) / (
+                comparison_exposed_observations + 4
+            )
+            comparison_control_posterior = (counts["comparison_control_accepted"] + 2) / (
+                comparison_control_observations + 4
+            )
+            estimated_lift = comparison_exposed_posterior - comparison_control_posterior
+            exposed_variance = self._beta_posterior_variance(
+                counts["comparison_exposed_accepted"], comparison_exposed_observations
+            )
             control_variance = self._beta_posterior_variance(
-                counts["control_accepted"], control_observations
+                counts["comparison_control_accepted"], comparison_control_observations
             )
             lift_standard_error = math.sqrt(exposed_variance + control_variance)
             lift_margin = 1.96 * lift_standard_error
             lift_lower_bound = max(-1.0, estimated_lift - lift_margin)
             lift_upper_bound = min(1.0, estimated_lift + lift_margin)
-            ablation_confidence = min(confidence, control_confidence)
+            comparison_exposed_confidence = comparison_exposed_observations / (
+                comparison_exposed_observations + 5
+            )
+            comparison_control_confidence = comparison_control_observations / (
+                comparison_control_observations + 5
+            )
+            ablation_confidence = min(comparison_exposed_confidence, comparison_control_confidence)
             ablation_adjustment = max(-1.0, min(1.0, estimated_lift * 2 * ablation_confidence))
             associative_adjustment = (posterior - 0.5) * 4 * confidence
             adjustment = max(-2.0, min(2.0, associative_adjustment + ablation_adjustment))
+            matched_for_skill = matched_contexts_by_skill.get((name, version), set())
+            if (name, version) not in contextual_skills:
+                comparison_mode = SkillComparisonMode.LEGACY_UNSTRATIFIED
+            elif matched_for_skill:
+                comparison_mode = SkillComparisonMode.MATCHED_CONTEXT
+            else:
+                comparison_mode = SkillComparisonMode.NO_CONTEXT_OVERLAP
             results[(name, version)] = SkillOutcomeStats(
                 skill_name=name,
                 skill_version=version,
@@ -878,6 +941,22 @@ class RepairLedger:
                 estimated_lift_upper_bound=round(lift_upper_bound, 4),
                 ablation_confidence=round(ablation_confidence, 4),
                 ablation_score_adjustment=round(ablation_adjustment, 3),
+                comparison_mode=comparison_mode,
+                matched_contexts=len(matched_for_skill),
+                comparison_exposed_observations=comparison_exposed_observations,
+                comparison_exposed_accepted=counts["comparison_exposed_accepted"],
+                comparison_exposed_rejected=counts["comparison_exposed_rejected"],
+                comparison_exposed_unevaluated_failures=counts[
+                    "comparison_exposed_unevaluated_failures"
+                ],
+                comparison_control_observations=comparison_control_observations,
+                comparison_control_accepted=counts["comparison_control_accepted"],
+                comparison_control_rejected=counts["comparison_control_rejected"],
+                comparison_control_unevaluated_failures=counts[
+                    "comparison_control_unevaluated_failures"
+                ],
+                comparison_exposed_posterior_success_rate=round(comparison_exposed_posterior, 4),
+                comparison_control_posterior_success_rate=round(comparison_control_posterior, 4),
             )
         return results
 
@@ -923,6 +1002,18 @@ class RepairLedger:
         if not isinstance(version, int) or isinstance(version, bool) or version < 1:
             return None
         return name.strip(), version
+
+    @staticmethod
+    def _skill_context_fingerprint(metadata: dict[str, Any], unit_id: str) -> str | None:
+        if "skill_context_fingerprint" not in metadata:
+            return None
+        value = metadata.get("skill_context_fingerprint")
+        if not isinstance(value, str) or len(value) != 64:
+            return f"invalid:{unit_id}"
+        normalized = value.casefold()
+        if any(character not in "0123456789abcdef" for character in normalized):
+            return f"invalid:{unit_id}"
+        return normalized
 
     def _initialize(self) -> None:
         with self._connection() as connection:

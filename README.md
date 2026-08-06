@@ -33,6 +33,8 @@ pipeline that work locally without requiring an LLM or external service.
   silently alter ranking or health in another context.
 - Uncertainty-aware Skill health decisions that can quarantine statistically supported controlled
   harm and preserve statistically supported controlled benefit.
+- Matched-context Skill experiments that prevent unrelated repairs within one failure type from
+  serving as each other's counterfactual controls.
 - Pluggable patch generation through an isolated command protocol or the built-in OpenAI
   Responses API provider.
 - Explainable adaptive generator portfolios that learn from repository-scoped run outcomes,
@@ -198,11 +200,20 @@ the cadence or `0` to disable it. Holdouts rotate deterministically across eligi
 never suppress a quarantine recovery probe.
 
 `skill-outcomes` deduplicates retries from the same AutoFix run before aggregating exposed and
-control arms. Each arm uses a Beta(2,2) posterior; estimated lift is the exposed posterior minus
-the control posterior. Its score contribution is bounded to +/-1 and shrunk by the smaller arm's
-sample confidence before joining the associative adjustment. This is a controlled estimate, not
-proof of causality: repository drift, other retrieved Skills, and generator changes can still
-confound it.
+control arms. New AutoFix runs also persist a SHA-256 context fingerprint derived from failure type,
+normalized task and diagnosis terms, and localized code symbols. Controlled estimates only use
+contexts in which that Skill has both exposed and withheld runs; raw counts remain visible for
+audit. A context with only one arm contributes no controlled score or health evidence, preventing
+unrelated problems in the same failure category from becoming false counterfactuals. Historical
+records without fingerprints retain the previous `legacy_unstratified` behavior.
+
+Each comparison arm uses a Beta(2,2) posterior; estimated lift is the matched exposed posterior
+minus the matched control posterior. Its score contribution is bounded to +/-1 and shrunk by the
+smaller arm's sample confidence before joining the associative adjustment. `skill-outcomes`
+reports `matched_context`, `no_context_overlap`, or `legacy_unstratified`, the number of matched
+contexts, matched arm counts, raw counts, posteriors, lift, and interval. This is a controlled
+estimate, not proof of causality: repository drift, other retrieved Skills, and generator changes
+can still confound it.
 
 AutoFix scopes both exposed and control evidence to the diagnosed failure type before ranking or
 health evaluation. For example, a Skill's reasoning-repair outcomes cannot quarantine it during a
@@ -213,12 +224,12 @@ failure categories. Omitting `--failure-type` preserves the backward-compatible 
 
 Every relevant Skill also receives an explainable health state and decision basis. New Skills are
 `unobserved`; Skills with fewer than five exposed repository-scoped observations remain `learning`.
-When both exposed and control arms have at least five observations, AutoHarness approximates a 95%
-interval for the difference between their independent Beta(2,2) posteriors. An interval entirely at
-or below `-0.05` quarantines the Skill as `controlled_harm`; an interval entirely at or above
-`+0.05` keeps it healthy as `controlled_benefit`. Inconclusive or unavailable controls fall back to
-the existing absolute rule: an exposed posterior at or below 0.30 after five observations is
-quarantined. Quarantined Skills are removed from generator context but remain in
+When both matched comparison arms have at least five observations, AutoHarness approximates a 95%
+interval for the difference between their independent Beta(2,2) posteriors. An interval entirely
+at or below `-0.05` quarantines the Skill as `controlled_harm`; an interval entirely at or above
+`+0.05` keeps it healthy as `controlled_benefit`. Inconclusive, unmatched, or unavailable controls
+fall back to the existing absolute rule: an exposed posterior at or below 0.30 after five
+observations is quarantined. Quarantined Skills are removed from generator context but remain in
 `quarantined_skills` output with counts, interval, decision basis, thresholds, and reasons.
 Candidate metadata preserves the same basis and lift interval. These conservative approximations
 reduce false causal decisions but do not eliminate confounding.
@@ -504,7 +515,7 @@ To include code localization, wrap the trace in an analysis request:
 - `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
 - `skills.py` converts validated repairs into portable YAML skills.
 - `registry.py` safely indexes and ranks the latest learned Skill versions with conservative,
-  explainable exposed/control adjustments, uncertainty-aware health gates, and rotating probes.
+  explainable matched-context adjustments, uncertainty-aware health gates, and rotating probes.
 - `service.py` orchestrates the Observe -> Diagnose -> Repair -> Evaluate -> Learn workflow.
 - `api.py` and `cli.py` are transport adapters.
 
@@ -545,7 +556,8 @@ uv run pytest
   selection. Skill health closes the outcome-to-retrieval feedback loop with quarantine and
   recovery probes, while periodic ablation supplies a cautious controlled lift estimate. Skill
   outcome learning is isolated by diagnosed failure type, and approximate lift intervals now drive
-  conservative controlled health decisions. Paired experiments and harness optimization are next.
+  conservative controlled health decisions. Context matching now removes unrelated counterfactuals;
+  balanced pair scheduling and harness optimization are next.
 
 ## License
 

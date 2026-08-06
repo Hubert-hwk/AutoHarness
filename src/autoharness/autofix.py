@@ -465,6 +465,7 @@ class AutoFixPipeline:
             "autofix_run_id": run_id,
             "autofix_attempt": attempt_number,
             "autofix_max_attempts": max_attempts,
+            "skill_context_fingerprint": recommendation.context_fingerprint,
             "generator_provider": generated.provider,
             "generation_duration_ms": generated.duration_ms,
             "prior_candidate_ids": [
@@ -494,6 +495,12 @@ class AutoFixPipeline:
                         if match.health is not None
                         else None
                     ),
+                    "comparison_mode": (
+                        match.health.comparison_mode.value if match.health is not None else None
+                    ),
+                    "matched_contexts": (
+                        match.health.matched_contexts if match.health is not None else None
+                    ),
                     "quarantine_probe": match.quarantine_probe,
                 }
                 for match in recommendation.skills.matches
@@ -519,6 +526,12 @@ class AutoFixPipeline:
                         ]
                         if item.health is not None
                         else None
+                    ),
+                    "comparison_mode": (
+                        item.health.comparison_mode.value if item.health is not None else None
+                    ),
+                    "matched_contexts": (
+                        item.health.matched_contexts if item.health is not None else None
                     ),
                     "reason": item.reason,
                 }

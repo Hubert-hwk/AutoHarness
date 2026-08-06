@@ -88,6 +88,12 @@ class SkillHealthBasis(StrEnum):
     CONTROLLED_BENEFIT = "controlled_benefit"
 
 
+class SkillComparisonMode(StrEnum):
+    LEGACY_UNSTRATIFIED = "legacy_unstratified"
+    MATCHED_CONTEXT = "matched_context"
+    NO_CONTEXT_OVERLAP = "no_context_overlap"
+
+
 class TraceEvent(BaseModel):
     """One structured observation from an agent execution."""
 
@@ -419,6 +425,18 @@ class SkillOutcomeStats(BaseModel):
     estimated_lift_upper_bound: float = Field(default=1, ge=-1, le=1)
     ablation_confidence: float = Field(default=0, ge=0, le=1)
     ablation_score_adjustment: float = Field(default=0, ge=-1, le=1)
+    comparison_mode: SkillComparisonMode = SkillComparisonMode.LEGACY_UNSTRATIFIED
+    matched_contexts: int = Field(default=0, ge=0)
+    comparison_exposed_observations: int | None = Field(default=None, ge=0)
+    comparison_exposed_accepted: int = Field(default=0, ge=0)
+    comparison_exposed_rejected: int = Field(default=0, ge=0)
+    comparison_exposed_unevaluated_failures: int = Field(default=0, ge=0)
+    comparison_control_observations: int | None = Field(default=None, ge=0)
+    comparison_control_accepted: int = Field(default=0, ge=0)
+    comparison_control_rejected: int = Field(default=0, ge=0)
+    comparison_control_unevaluated_failures: int = Field(default=0, ge=0)
+    comparison_exposed_posterior_success_rate: float = Field(default=0.5, ge=0, le=1)
+    comparison_control_posterior_success_rate: float = Field(default=0.5, ge=0, le=1)
 
     @model_validator(mode="after")
     def validate_lift_interval(self) -> Self:
@@ -428,6 +446,26 @@ class SkillOutcomeStats(BaseModel):
             <= self.estimated_lift_upper_bound
         ):
             raise ValueError("estimated lift must be contained in its uncertainty interval")
+        exposed_total = (
+            self.comparison_exposed_accepted
+            + self.comparison_exposed_rejected
+            + self.comparison_exposed_unevaluated_failures
+        )
+        control_total = (
+            self.comparison_control_accepted
+            + self.comparison_control_rejected
+            + self.comparison_control_unevaluated_failures
+        )
+        if (
+            self.comparison_exposed_observations is not None
+            and self.comparison_exposed_observations != exposed_total
+        ):
+            raise ValueError("comparison exposed observations must equal their outcome counts")
+        if (
+            self.comparison_control_observations is not None
+            and self.comparison_control_observations != control_total
+        ):
+            raise ValueError("comparison control observations must equal their outcome counts")
         return self
 
 
@@ -446,6 +484,10 @@ class SkillHealth(BaseModel):
     estimated_lift: float = Field(default=0, ge=-1, le=1)
     estimated_lift_lower_bound: float = Field(default=-1, ge=-1, le=1)
     estimated_lift_upper_bound: float = Field(default=1, ge=-1, le=1)
+    comparison_mode: SkillComparisonMode = SkillComparisonMode.LEGACY_UNSTRATIFIED
+    matched_contexts: int = Field(default=0, ge=0)
+    comparison_exposed_observations: int = Field(default=0, ge=0)
+    comparison_control_observations: int = Field(default=0, ge=0)
     reason: str
 
 
@@ -482,6 +524,7 @@ class SkillRecommendationResult(BaseModel):
     code_locations: list[CodeLocation] = Field(default_factory=list)
     skills: SkillSearchResult
     withheld_skills: list[SkillAblation] = Field(default_factory=list)
+    context_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class PatchGeneratorConfig(BaseModel):

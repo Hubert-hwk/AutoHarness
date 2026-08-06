@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -13,9 +15,11 @@ from autoharness.code_graph import PythonCodeGraph
 from autoharness.diagnosis import FailureDiagnoser
 from autoharness.models import (
     AgentTrace,
+    CodeLocation,
     FailureDiagnosis,
     FailureType,
     Skill,
+    SkillComparisonMode,
     SkillHealth,
     SkillHealthBasis,
     SkillHealthStatus,
@@ -217,9 +221,27 @@ class SkillRegistry:
             )
             if outcome.control_observations:
                 ablation_direction = "+" if outcome.ablation_score_adjustment >= 0 else ""
+                comparison_exposed_observations = (
+                    outcome.comparison_exposed_observations
+                    if outcome.comparison_exposed_observations is not None
+                    else outcome.observations
+                )
+                comparison_control_observations = (
+                    outcome.comparison_control_observations
+                    if outcome.comparison_control_observations is not None
+                    else outcome.control_observations
+                )
+                comparison_scope = (
+                    "legacy unstratified comparison"
+                    if outcome.comparison_mode == SkillComparisonMode.LEGACY_UNSTRATIFIED
+                    else f"{outcome.matched_contexts} matched contexts"
+                )
                 reasons.append(
-                    "controlled ablation: "
-                    f"{outcome.control_observations} controls, control Bayesian rate "
+                    f"controlled ablation ({outcome.comparison_mode.value}): "
+                    f"{comparison_scope}, "
+                    f"{comparison_exposed_observations} exposed and "
+                    f"{comparison_control_observations} comparison observations; "
+                    f"{outcome.control_observations} raw controls, control Bayesian rate "
                     f"{outcome.control_posterior_success_rate:.3f}, estimated lift "
                     f"{outcome.estimated_lift:+.3f}, approximate 95% interval "
                     f"[{outcome.estimated_lift_lower_bound:+.3f}, "
@@ -254,6 +276,21 @@ class SkillRegistry:
                 decision_basis=SkillHealthBasis.NO_EVIDENCE,
                 reason="no repository-scoped outcome evidence yet",
             )
+        comparison_exposed_observations = (
+            outcome.comparison_exposed_observations
+            if outcome.comparison_exposed_observations is not None
+            else outcome.observations
+        )
+        comparison_control_observations = (
+            outcome.comparison_control_observations
+            if outcome.comparison_control_observations is not None
+            else outcome.control_observations
+        )
+        comparison_scope = (
+            "unstratified legacy comparison observations"
+            if outcome.comparison_mode == SkillComparisonMode.LEGACY_UNSTRATIFIED
+            else f"matched comparison observations across {outcome.matched_contexts} contexts"
+        )
         if outcome.observations < cls.quarantine_minimum_observations:
             status = SkillHealthStatus.LEARNING
             basis = SkillHealthBasis.INSUFFICIENT_EVIDENCE
@@ -262,7 +299,8 @@ class SkillRegistry:
                 "collected before health gating"
             )
         elif (
-            outcome.control_observations >= cls.controlled_minimum_observations
+            comparison_exposed_observations >= cls.controlled_minimum_observations
+            and comparison_control_observations >= cls.controlled_minimum_observations
             and outcome.estimated_lift_upper_bound <= -cls.controlled_effect_margin
         ):
             status = SkillHealthStatus.QUARANTINED
@@ -272,10 +310,13 @@ class SkillRegistry:
                 f"[{outcome.estimated_lift_lower_bound:+.3f}, "
                 f"{outcome.estimated_lift_upper_bound:+.3f}] is at or below "
                 f"-{cls.controlled_effect_margin:.3f} after {outcome.observations} exposed and "
-                f"{outcome.control_observations} control observations"
+                f"{outcome.control_observations} raw control observations; decision uses "
+                f"{comparison_exposed_observations}/{comparison_control_observations} "
+                f"{comparison_scope}"
             )
         elif (
-            outcome.control_observations >= cls.controlled_minimum_observations
+            comparison_exposed_observations >= cls.controlled_minimum_observations
+            and comparison_control_observations >= cls.controlled_minimum_observations
             and outcome.estimated_lift_lower_bound >= cls.controlled_effect_margin
         ):
             status = SkillHealthStatus.HEALTHY
@@ -285,7 +326,9 @@ class SkillRegistry:
                 f"[{outcome.estimated_lift_lower_bound:+.3f}, "
                 f"{outcome.estimated_lift_upper_bound:+.3f}] is at or above "
                 f"+{cls.controlled_effect_margin:.3f} after {outcome.observations} exposed and "
-                f"{outcome.control_observations} control observations"
+                f"{outcome.control_observations} raw control observations; decision uses "
+                f"{comparison_exposed_observations}/{comparison_control_observations} "
+                f"{comparison_scope}"
             )
         elif outcome.posterior_success_rate <= cls.quarantine_posterior_threshold:
             status = SkillHealthStatus.QUARANTINED
@@ -318,6 +361,10 @@ class SkillRegistry:
             estimated_lift=outcome.estimated_lift,
             estimated_lift_lower_bound=outcome.estimated_lift_lower_bound,
             estimated_lift_upper_bound=outcome.estimated_lift_upper_bound,
+            comparison_mode=outcome.comparison_mode,
+            matched_contexts=outcome.matched_contexts,
+            comparison_exposed_observations=comparison_exposed_observations,
+            comparison_control_observations=comparison_control_observations,
             reason=reason,
         )
 
@@ -424,4 +471,32 @@ class SkillRecommender:
             diagnosis=diagnosis,
             code_locations=locations,
             skills=search,
+            context_fingerprint=self._context_fingerprint(trace, diagnosis, locations),
         )
+
+    @staticmethod
+    def _context_fingerprint(
+        trace: AgentTrace,
+        diagnosis: FailureDiagnosis,
+        locations: list[CodeLocation],
+    ) -> str:
+        payload = {
+            "failure_type": diagnosis.failure_type.value,
+            "trace_terms": sorted(SkillRegistry._tokens(trace.task.casefold())),
+            "search_terms": sorted(
+                {term.strip().casefold() for term in diagnosis.search_terms if term.strip()}
+            ),
+            "locations": sorted(
+                {
+                    f"{Path(location.path).as_posix()}::{location.symbol or ''}"
+                    for location in locations
+                }
+            ),
+        }
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
