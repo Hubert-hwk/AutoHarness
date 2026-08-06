@@ -32,6 +32,7 @@ from autoharness.models import (
     PatchGeneratorConfig,
     PatchVerificationPlan,
     Skill,
+    SkillHealthStatus,
     TraceEvent,
 )
 from autoharness.skills import SkillGenerator
@@ -586,6 +587,87 @@ def test_autofix_adaptive_selection_uses_diagnosed_failure_type_context(
     assert result.run.generator_selection.initial_selected_provider == "reasoner"
 
 
+def test_autofix_quarantines_harmful_skill_and_recovers_it_through_probes(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "repository")
+    skills = tmp_path / "skills"
+    _seed_skill(skills)
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    for _ in range(5):
+        _record_skill_outcome(
+            ledger,
+            repository,
+            "historical_score_repair",
+            CandidateStatus.REJECTED,
+        )
+    generator = CommandPatchGenerator(
+        PatchGeneratorConfig(
+            name="test-command-generator",
+            argv=[sys.executable, "generator.py"],
+        )
+    )
+    pipeline = AutoFixPipeline(generator, ledger, skills)
+
+    quarantined = pipeline.run(
+        _trace(),
+        repository,
+        _plan(),
+        max_attempts=1,
+        skill_quarantine_probe_interval=0,
+    )
+    assert quarantined.recommendation.skills.matches == []
+    assert quarantined.recommendation.skills.quarantined_skills[0].skill_name == (
+        "historical_score_repair"
+    )
+    assert (
+        quarantined.recommendation.skills.quarantined_skills[0].status
+        == SkillHealthStatus.QUARANTINED
+    )
+
+    first_probe = pipeline.run(
+        _trace(),
+        repository,
+        _plan(),
+        max_attempts=1,
+        skill_quarantine_probe_interval=1,
+    )
+    first_match = first_probe.recommendation.skills.matches[0]
+    assert first_match.quarantine_probe
+    assert first_match.health.status == SkillHealthStatus.QUARANTINED
+    retrieved = first_probe.evolution.candidate.metadata["retrieved_skills"][0]
+    assert retrieved["health"] == SkillHealthStatus.QUARANTINED.value
+    assert retrieved["quarantine_probe"] is True
+    after_first_probe = ledger.skill_outcomes(repository_path=repository)[
+        ("historical_score_repair", 1)
+    ]
+    assert after_first_probe.accepted == 1
+    assert after_first_probe.posterior_success_rate == 0.3
+
+    second_probe = pipeline.run(
+        _trace(),
+        repository,
+        _plan(),
+        max_attempts=1,
+        skill_quarantine_probe_interval=1,
+    )
+    assert second_probe.recommendation.skills.matches[0].quarantine_probe
+
+    recovered = pipeline.run(
+        _trace(),
+        repository,
+        _plan(),
+        max_attempts=1,
+        skill_quarantine_probe_interval=0,
+    )
+    recovered_match = recovered.recommendation.skills.matches[0]
+    assert not recovered_match.quarantine_probe
+    assert recovered_match.health.status == SkillHealthStatus.HEALTHY
+    assert recovered_match.outcome_stats is not None
+    assert recovered_match.outcome_stats.accepted == 2
+    assert recovered_match.outcome_stats.posterior_success_rate > 0.3
+
+
 def test_autofix_never_retries_after_source_was_promoted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -622,6 +704,24 @@ def test_autofix_rejects_invalid_attempt_limit(tmp_path: Path, max_attempts: int
         AutoFixPipeline(
             _generator(), RepairLedger(tmp_path / "ledger.db"), tmp_path / "skills"
         ).run(_trace(), repository, _plan(), max_attempts=max_attempts)
+
+
+@pytest.mark.parametrize("probe_interval", [-1, 1001])
+def test_autofix_rejects_invalid_skill_probe_interval(
+    tmp_path: Path,
+    probe_interval: int,
+) -> None:
+    repository = _repository(tmp_path / "repository")
+
+    with pytest.raises(ValueError, match="between 0 and 1000"):
+        AutoFixPipeline(
+            _generator(), RepairLedger(tmp_path / "ledger.db"), tmp_path / "skills"
+        ).run(
+            _trace(),
+            repository,
+            _plan(),
+            skill_quarantine_probe_interval=probe_interval,
+        )
 
 
 def test_autofix_protects_generator_program_from_its_output(tmp_path: Path) -> None:

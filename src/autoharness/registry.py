@@ -15,6 +15,8 @@ from autoharness.models import (
     AgentTrace,
     FailureType,
     Skill,
+    SkillHealth,
+    SkillHealthStatus,
     SkillLoadIssue,
     SkillMatch,
     SkillOutcomeStats,
@@ -33,6 +35,8 @@ class SkillRegistry:
 
     max_skill_bytes = 1024 * 1024
     max_skill_files = 5000
+    quarantine_minimum_observations = 5
+    quarantine_posterior_threshold = 0.3
 
     def __init__(
         self,
@@ -45,16 +49,52 @@ class SkillRegistry:
     def search(self, query: SkillQuery) -> SkillSearchResult:
         skills, issues, ignored = self._load_latest()
         matches: list[SkillMatch] = []
+        quarantined: list[SkillMatch] = []
         for skill, path in skills.values():
             match = self._score(skill, path, query)
             if match is not None:
+                if (
+                    match.health is not None
+                    and match.health.status == SkillHealthStatus.QUARANTINED
+                ):
+                    quarantined.append(match)
+                    if not query.include_quarantined:
+                        continue
+                    match = match.model_copy(
+                        update={
+                            "reasons": [
+                                *match.reasons,
+                                "quarantined Skill included by explicit override",
+                            ]
+                        }
+                    )
                 matches.append(match)
         matches.sort(key=lambda item: (-item.score, item.skill.name, -item.skill.version))
+        quarantined.sort(key=lambda item: (-item.score, item.skill.name, -item.skill.version))
+        if (
+            not query.include_quarantined
+            and query.quarantine_probe_index is not None
+            and quarantined
+        ):
+            probe = quarantined[query.quarantine_probe_index % len(quarantined)]
+            probe = probe.model_copy(
+                update={
+                    "quarantine_probe": True,
+                    "reasons": [
+                        *probe.reasons,
+                        "selected as a controlled quarantine recovery probe",
+                    ],
+                }
+            )
+            matches = [*matches[: max(0, query.limit - 1)], probe]
+        else:
+            matches = matches[: query.limit]
         return SkillSearchResult(
-            matches=matches[: query.limit],
+            matches=matches,
             indexed_skills=len(skills),
             ignored_older_versions=ignored,
             invalid_files=issues,
+            quarantined_skills=[item.health for item in quarantined if item.health is not None],
         )
 
     def _load_latest(
@@ -168,12 +208,59 @@ class SkillRegistry:
                 f"Bayesian rate {outcome.posterior_success_rate:.3f}, "
                 f"score {direction}{outcome.score_adjustment:.3f}"
             )
+        health = self._health(skill, outcome)
+        reasons.append(f"Skill health is {health.status.value}: {health.reason}")
         return SkillMatch(
             skill=skill,
             path=str(path.resolve()),
             score=round(score, 3),
             reasons=reasons,
             outcome_stats=outcome,
+            health=health,
+        )
+
+    @classmethod
+    def _health(cls, skill: Skill, outcome: SkillOutcomeStats | None) -> SkillHealth:
+        if outcome is None:
+            return SkillHealth(
+                skill_name=skill.name,
+                skill_version=skill.version,
+                status=SkillHealthStatus.UNOBSERVED,
+                observations=0,
+                posterior_success_rate=0.5,
+                minimum_observations=cls.quarantine_minimum_observations,
+                quarantine_threshold=cls.quarantine_posterior_threshold,
+                reason="no repository-scoped outcome evidence yet",
+            )
+        if outcome.observations < cls.quarantine_minimum_observations:
+            status = SkillHealthStatus.LEARNING
+            reason = (
+                f"{outcome.observations}/{cls.quarantine_minimum_observations} observations "
+                "collected before health gating"
+            )
+        elif outcome.posterior_success_rate <= cls.quarantine_posterior_threshold:
+            status = SkillHealthStatus.QUARANTINED
+            reason = (
+                f"Bayesian success rate {outcome.posterior_success_rate:.3f} is at or below "
+                f"{cls.quarantine_posterior_threshold:.3f} after "
+                f"{outcome.observations} observations"
+            )
+        else:
+            status = SkillHealthStatus.HEALTHY
+            reason = (
+                f"Bayesian success rate {outcome.posterior_success_rate:.3f} remains above "
+                f"{cls.quarantine_posterior_threshold:.3f} after "
+                f"{outcome.observations} observations"
+            )
+        return SkillHealth(
+            skill_name=skill.name,
+            skill_version=skill.version,
+            status=status,
+            observations=outcome.observations,
+            posterior_success_rate=outcome.posterior_success_rate,
+            minimum_observations=cls.quarantine_minimum_observations,
+            quarantine_threshold=cls.quarantine_posterior_threshold,
+            reason=reason,
         )
 
     @staticmethod
@@ -230,6 +317,8 @@ class SkillRecommender:
         same_failure_only: bool = True,
         allow_missing_directory: bool = False,
         outcome_stats: dict[tuple[str, int], SkillOutcomeStats] | None = None,
+        include_quarantined: bool = False,
+        quarantine_probe_index: int | None = None,
     ) -> SkillRecommendationResult:
         diagnosis = self.diagnoser.diagnose(trace)
         locations = []
@@ -268,6 +357,8 @@ class SkillRecommender:
                     same_failure_only=(
                         same_failure_only and diagnosis.failure_type != FailureType.UNKNOWN
                     ),
+                    include_quarantined=include_quarantined,
+                    quarantine_probe_index=quarantine_probe_index,
                 )
             )
         return SkillRecommendationResult(

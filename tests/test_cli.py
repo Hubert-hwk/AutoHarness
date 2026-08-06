@@ -232,6 +232,8 @@ def test_autofix_cli_runs_full_pipeline(tmp_path: Path) -> None:
             "--repo",
             str(tmp_path),
             "--allow-command-execution",
+            "--skill-probe-interval",
+            "0",
             "--apply-to-source",
         ],
     )
@@ -530,3 +532,64 @@ def test_skill_outcomes_cli_and_outcome_aware_recommendation(tmp_path: Path) -> 
     match = json.loads(recommendation.output)["skills"]["matches"][0]
     assert match["outcome_stats"]["accepted"] == 1
     assert any("observed outcomes" in reason for reason in match["reasons"])
+
+
+def test_recommend_skills_cli_quarantines_and_explicitly_includes_unhealthy_skill(
+    tmp_path: Path,
+) -> None:
+    skills = tmp_path / "skills"
+    SkillGenerator().save(
+        Skill(
+            name="harmful_repair",
+            description="Repair incorrect low scores",
+            failure_type=FailureType.REASONING,
+            triggers=["incorrect answer", "low score"],
+            context={"root_cause": "low value"},
+            workflow=["Increase value"],
+            evaluation=["Run benchmark"],
+        ),
+        skills,
+    )
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    for index in range(5):
+        candidate = ledger.propose(
+            title=f"Rejected harmful repair {index}",
+            repository_path=tmp_path,
+            patch_sha256=f"{index + 1:064x}",
+            failure_type=FailureType.REASONING,
+            metadata={"retrieved_skills": [{"name": "harmful_repair", "version": 1, "score": 9.0}]},
+        )
+        ledger.transition(candidate.candidate_id, CandidateStatus.REJECTED)
+    trace = tmp_path / "trace.json"
+    trace.write_text(
+        json.dumps(
+            {
+                "task": "Fix an incorrect answer with a low score",
+                "events": [{"kind": "response", "status": "failure", "error": "incorrect answer"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    arguments = [
+        "recommend-skills",
+        str(trace),
+        "--skills",
+        str(skills),
+        "--repo",
+        str(tmp_path),
+        "--ledger",
+        str(ledger.path),
+    ]
+
+    quarantined = CliRunner().invoke(app, arguments)
+    included = CliRunner().invoke(app, [*arguments, "--include-quarantined"])
+
+    assert quarantined.exit_code == 0
+    quarantined_payload = json.loads(quarantined.output)["skills"]
+    assert quarantined_payload["matches"] == []
+    assert quarantined_payload["quarantined_skills"][0]["skill_name"] == "harmful_repair"
+    assert quarantined_payload["quarantined_skills"][0]["status"] == "quarantined"
+    assert included.exit_code == 0
+    included_match = json.loads(included.output)["skills"]["matches"][0]
+    assert included_match["skill"]["name"] == "harmful_repair"
+    assert any("explicit override" in reason for reason in included_match["reasons"])

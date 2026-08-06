@@ -3,7 +3,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from autoharness.models import FailureType, Skill, SkillOutcomeStats, SkillQuery
+from autoharness.models import (
+    FailureType,
+    Skill,
+    SkillHealthStatus,
+    SkillOutcomeStats,
+    SkillQuery,
+)
 from autoharness.registry import SkillRegistry, SkillRegistryError
 from autoharness.skills import SkillGenerator
 
@@ -141,7 +147,91 @@ def test_registry_reranks_with_explainable_outcome_evidence(tmp_path: Path) -> N
         )
     )
 
-    assert [match.skill.name for match in result.matches] == ["z_good", "a_poor"]
+    assert [match.skill.name for match in result.matches] == ["z_good"]
     assert result.matches[0].outcome_stats == outcomes[("z_good", 1)]
     assert any("observed outcomes" in reason for reason in result.matches[0].reasons)
     assert any("score +0.952" in reason for reason in result.matches[0].reasons)
+    assert result.quarantined_skills[0].skill_name == "a_poor"
+    assert result.quarantined_skills[0].status == SkillHealthStatus.QUARANTINED
+
+    included = SkillRegistry(tmp_path, outcomes).search(
+        SkillQuery(
+            failure_type=FailureType.REASONING,
+            text="incorrect answer with a low score",
+            components=["value"],
+            include_quarantined=True,
+        )
+    )
+    assert [match.skill.name for match in included.matches] == ["z_good", "a_poor"]
+    assert any("explicit override" in reason for reason in included.matches[1].reasons)
+
+    probe = SkillRegistry(tmp_path, outcomes).search(
+        SkillQuery(
+            failure_type=FailureType.REASONING,
+            text="incorrect answer with a low score",
+            components=["value"],
+            quarantine_probe_index=0,
+        )
+    )
+    assert [match.skill.name for match in probe.matches] == ["z_good", "a_poor"]
+    assert probe.matches[1].quarantine_probe
+    assert any("controlled quarantine" in reason for reason in probe.matches[1].reasons)
+
+
+def test_new_skill_version_resets_quarantine_history(tmp_path: Path) -> None:
+    generator = SkillGenerator()
+    generator.save_versioned(_skill("repair"), tmp_path)
+    generator.save_versioned(_skill("repair"), tmp_path)
+    old_outcome = SkillOutcomeStats(
+        skill_name="repair",
+        skill_version=1,
+        observations=10,
+        accepted=0,
+        rejected=10,
+        unevaluated_failures=0,
+        post_acceptance_failures=0,
+        posterior_success_rate=0.1429,
+        confidence=0.6667,
+        score_adjustment=-0.952,
+    )
+
+    result = SkillRegistry(tmp_path, {("repair", 1): old_outcome}).search(
+        SkillQuery(failure_type=FailureType.REASONING, text="incorrect low score")
+    )
+
+    assert result.matches[0].skill.version == 2
+    assert result.matches[0].health.status == SkillHealthStatus.UNOBSERVED
+    assert result.quarantined_skills == []
+
+
+def test_registry_rotates_controlled_probes_across_quarantined_skills(tmp_path: Path) -> None:
+    for name in ("a_harmful", "b_harmful"):
+        SkillGenerator().save(_skill(name), tmp_path)
+    outcomes = {
+        (name, 1): SkillOutcomeStats(
+            skill_name=name,
+            skill_version=1,
+            observations=5,
+            accepted=0,
+            rejected=5,
+            unevaluated_failures=0,
+            post_acceptance_failures=0,
+            posterior_success_rate=0.2222,
+            confidence=0.5,
+            score_adjustment=-0.5556,
+        )
+        for name in ("a_harmful", "b_harmful")
+    }
+    registry = SkillRegistry(tmp_path, outcomes)
+
+    first = registry.search(
+        SkillQuery(text="incorrect low score", limit=1, quarantine_probe_index=0)
+    )
+    second = registry.search(
+        SkillQuery(text="incorrect low score", limit=1, quarantine_probe_index=1)
+    )
+
+    assert first.matches[0].skill.name == "a_harmful"
+    assert second.matches[0].skill.name == "b_harmful"
+    assert first.matches[0].quarantine_probe
+    assert second.matches[0].quarantine_probe

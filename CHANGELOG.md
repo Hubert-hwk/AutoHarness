@@ -2,6 +2,16 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.14.0 - 2026-08-07
+
+- Add explainable unobserved, learning, healthy, and quarantined states for retrieved Skills.
+- Quarantine a Skill after at least five observations when its Beta posterior remains at or below 0.30.
+- Keep quarantined Skills out of generation context while listing their health evidence for audit.
+- Probe one relevant quarantined Skill on a configurable repository-run cadence and rotate probes.
+- Feed successful probe outcomes back into health computation so recovered Skills re-enter normally.
+- Allow explicit CLI inspection overrides and let a new Skill version begin with clean health evidence.
+- Persist health and probe provenance with repair candidates and add full quarantine/recovery tests.
+
 ## 0.13.0 - 2026-08-07
 
 - Persist the diagnosed failure type on every AutoFix run before its first provider attempt.

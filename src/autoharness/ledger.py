@@ -595,6 +595,18 @@ class RepairLedger:
                 ).fetchall()
         return [self._row_to_autofix_run(row).model_copy(update={"trace": None}) for row in rows]
 
+    def autofix_run_count(self, *, repository_path: str | Path | None = None) -> int:
+        """Count durable runs for deterministic repository-scoped maintenance cadence."""
+        with self._connection() as connection:
+            if repository_path is None:
+                row = connection.execute("SELECT COUNT(*) AS count FROM autofix_runs").fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT COUNT(*) AS count FROM autofix_runs WHERE repository_path = ?",
+                    (str(Path(repository_path).expanduser().resolve()),),
+                ).fetchone()
+        return int(row["count"])
+
     def autofix_attempts(self, run_id: str) -> list[AutoFixRunAttemptRecord]:
         self.get_autofix_run(run_id)
         with self._connection() as connection:

@@ -266,6 +266,13 @@ def recommend_skills(
         bool,
         typer.Option("--cross-failure", help="Allow matches from other failure types."),
     ] = False,
+    include_quarantined: Annotated[
+        bool,
+        typer.Option(
+            "--include-quarantined",
+            help="Explicitly include unhealthy Skills for manual inspection or recovery.",
+        ),
+    ] = False,
 ) -> None:
     """Diagnose a trace and retrieve relevant learned repair Skills."""
     try:
@@ -277,6 +284,7 @@ def recommend_skills(
             ledger_path=ledger,
             limit=limit,
             same_failure_only=not cross_failure,
+            include_quarantined=include_quarantined,
         )
     except (OSError, SkillRegistryError, ValueError) as exc:
         typer.echo(f"Skill recommendation failed: {exc}", err=True)
@@ -389,6 +397,15 @@ def autofix(
     skills: Annotated[Path | None, typer.Option("--skills")] = None,
     skill_limit: Annotated[int, typer.Option("--skill-limit", min=1, max=50)] = 5,
     max_attempts: Annotated[int, typer.Option("--max-attempts", min=1, max=10)] = 3,
+    skill_quarantine_probe_interval: Annotated[
+        int,
+        typer.Option(
+            "--skill-probe-interval",
+            min=0,
+            max=1000,
+            help="Probe one quarantined Skill every N repository runs; 0 disables probes.",
+        ),
+    ] = 10,
     allow_command_execution: Annotated[bool, typer.Option("--allow-command-execution")] = False,
     allow_network_generation: Annotated[
         bool,
@@ -446,6 +463,7 @@ def autofix(
             promote=apply_to_source,
             skill_limit=skill_limit,
             max_attempts=max_attempts,
+            skill_quarantine_probe_interval=skill_quarantine_probe_interval,
             persist_trace=persist_trace,
             recover_stale_after_seconds=recover_stale_after_seconds,
         )

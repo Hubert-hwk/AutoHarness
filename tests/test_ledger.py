@@ -483,6 +483,9 @@ def test_ledger_persists_generator_selection_and_aggregates_scoped_outcomes(
     assert outcomes["slow"].interrupted == 1
     assert outcomes["slow"].posterior_success_rate == 0.4
     assert outcomes["slow"].average_attempts == 1
+    assert ledger.autofix_run_count(repository_path=repository) == 4
+    assert ledger.autofix_run_count(repository_path=other_repository) == 1
+    assert ledger.autofix_run_count() == 5
     persisted = next(
         run for run in ledger.list_autofix_runs() if run.generator_selection is not None
     )

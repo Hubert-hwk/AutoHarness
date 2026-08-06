@@ -73,6 +73,13 @@ class AutoFixRunStatus(StrEnum):
     INTERRUPTED = "interrupted"
 
 
+class SkillHealthStatus(StrEnum):
+    UNOBSERVED = "unobserved"
+    LEARNING = "learning"
+    HEALTHY = "healthy"
+    QUARANTINED = "quarantined"
+
+
 class TraceEvent(BaseModel):
     """One structured observation from an agent execution."""
 
@@ -372,6 +379,8 @@ class SkillQuery(BaseModel):
     components: list[str] = Field(default_factory=list)
     limit: int = Field(default=5, ge=1, le=50)
     same_failure_only: bool = True
+    include_quarantined: bool = False
+    quarantine_probe_index: int | None = Field(default=None, ge=0)
 
 
 class SkillLoadIssue(BaseModel):
@@ -392,12 +401,25 @@ class SkillOutcomeStats(BaseModel):
     score_adjustment: float = Field(ge=-2, le=2)
 
 
+class SkillHealth(BaseModel):
+    skill_name: str
+    skill_version: int = Field(ge=1)
+    status: SkillHealthStatus
+    observations: int = Field(ge=0)
+    posterior_success_rate: float = Field(ge=0, le=1)
+    minimum_observations: int = Field(ge=1)
+    quarantine_threshold: float = Field(ge=0, le=1)
+    reason: str
+
+
 class SkillMatch(BaseModel):
     skill: Skill
     path: str
     score: float = Field(ge=0)
     reasons: list[str]
     outcome_stats: SkillOutcomeStats | None = None
+    health: SkillHealth | None = None
+    quarantine_probe: bool = False
 
 
 class SkillSearchResult(BaseModel):
@@ -405,6 +427,7 @@ class SkillSearchResult(BaseModel):
     indexed_skills: int
     ignored_older_versions: int = 0
     invalid_files: list[SkillLoadIssue] = Field(default_factory=list)
+    quarantined_skills: list[SkillHealth] = Field(default_factory=list)
 
 
 class SkillRecommendationResult(BaseModel):

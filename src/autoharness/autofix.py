@@ -56,11 +56,14 @@ class AutoFixPipeline:
         promote: bool = False,
         skill_limit: int = 5,
         max_attempts: int = 3,
+        skill_quarantine_probe_interval: int = 10,
         persist_trace: bool = False,
         recover_stale_after_seconds: float | None = None,
     ) -> AutoFixPipelineResult:
         if not 1 <= max_attempts <= 10:
             raise ValueError("max_attempts must be between 1 and 10")
+        if not 0 <= skill_quarantine_probe_interval <= 1000:
+            raise ValueError("skill_quarantine_probe_interval must be between 0 and 1000")
         source = Path(repository).expanduser().resolve()
         if recover_stale_after_seconds is not None:
             self.ledger.recover_stale_autofix_runs(
@@ -86,6 +89,7 @@ class AutoFixPipeline:
                 promote=promote,
                 skill_limit=skill_limit,
                 max_attempts=max_attempts,
+                skill_quarantine_probe_interval=skill_quarantine_probe_interval,
             )
             status = (
                 AutoFixRunStatus.REJECTED
@@ -119,7 +123,15 @@ class AutoFixPipeline:
         promote: bool,
         skill_limit: int,
         max_attempts: int,
+        skill_quarantine_probe_interval: int,
     ) -> AutoFixPipelineResult:
+        run_sequence = self.ledger.autofix_run_count(repository_path=source)
+        quarantine_probe_index = None
+        if (
+            skill_quarantine_probe_interval > 0
+            and run_sequence % skill_quarantine_probe_interval == 0
+        ):
+            quarantine_probe_index = run_sequence // skill_quarantine_probe_interval - 1
         recommendation = self.recommender.recommend(
             trace,
             self.skill_directory,
@@ -127,6 +139,7 @@ class AutoFixPipeline:
             limit=skill_limit,
             allow_missing_directory=True,
             outcome_stats=self.ledger.skill_outcomes(repository_path=source),
+            quarantine_probe_index=quarantine_probe_index,
         )
         failure_type = recommendation.diagnosis.failure_type
         self.ledger.record_autofix_diagnosis(run.run_id, failure_type)
@@ -401,6 +414,8 @@ class AutoFixPipeline:
                     "version": match.skill.version,
                     "path": match.path,
                     "score": match.score,
+                    "health": match.health.status.value if match.health is not None else None,
+                    "quarantine_probe": match.quarantine_probe,
                 }
                 for match in recommendation.skills.matches
             ],

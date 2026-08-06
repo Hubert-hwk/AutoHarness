@@ -25,6 +25,8 @@ pipeline that work locally without requiring an LLM or external service.
 - Explainable retrieval over the latest learned Skill versions for future failures.
 - Outcome-aware Skill ranking that conservatively incorporates accepted, rejected, and failed
   repair history from the current repository.
+- Recoverable Skill health gating that quarantines repeatedly harmful experience and performs
+  controlled, rotating re-evaluation probes.
 - Pluggable patch generation through an isolated command protocol or the built-in OpenAI
   Responses API provider.
 - Explainable adaptive generator portfolios that learn from repository-scoped run outcomes,
@@ -182,6 +184,30 @@ adjustment to about +/-2 points, so a few correlated observations cannot overpow
 relevance. Every match reports accepted, rejected, and failed counts, posterior rate, score
 adjustment, and textual reasons. This is associative evidence, not a causal claim that a
 retrieved Skill alone produced the result.
+
+Every relevant Skill also receives an explainable health state. New Skills are `unobserved`; Skills
+with fewer than five repository-scoped observations remain `learning`. At five or more observations,
+a Beta posterior success rate at or below 0.30 moves the Skill to `quarantined`; otherwise it is
+`healthy`. Quarantined Skills are removed from generator context but remain in
+`quarantined_skills` audit output with counts, thresholds, and reasons. This gate is intentionally
+conservative and continues to use associative evidence rather than claiming causal attribution.
+
+Inspect quarantined matches manually when needed:
+
+```bash
+autoharness recommend-skills TRACE.json \
+  --skills PATH/.autoharness/skills \
+  --repo PATH \
+  --ledger PATH/.autoharness/ledger.db \
+  --include-quarantined
+```
+
+AutoFix probes one semantically relevant quarantined Skill every ten repository runs by default.
+Probes rotate when several Skills are quarantined, occupy at most one retrieval slot, and carry a
+`quarantine_probe` flag into candidate metadata. Their accepted, rejected, or failed outcomes feed
+the same Bayesian health calculation, allowing automatic recovery. Set
+`--skill-probe-interval N` to change the cadence or `0` to disable it. Publishing a newer immutable
+Skill version also starts a fresh health record while preserving the old version and its evidence.
 
 Invalid YAML is reported without hiding valid Skills, and older versions remain on disk for
 auditability. Use `--cross-failure` to explicitly allow experience from other failure
@@ -447,7 +473,7 @@ To include code localization, wrap the trace in an analysis request:
 - `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
 - `skills.py` converts validated repairs into portable YAML skills.
 - `registry.py` safely indexes and ranks the latest learned Skill versions with conservative,
-  explainable outcome adjustments.
+  explainable outcome adjustments, recoverable quarantine gates, and rotating probes.
 - `service.py` orchestrates the Observe -> Diagnose -> Repair -> Evaluate -> Learn workflow.
 - `api.py` and `cli.py` are transport adapters.
 
@@ -485,7 +511,8 @@ uv run pytest
 - **Phase 3 - Self-Evolving Harness:** versioned repair Skills and explainable retrieval are
   available with outcome-aware selection. Adaptive provider portfolios now perform controlled,
   auditable exploration, attempt-aware failover attribution, and failure-type-specialized
-  selection; causal credit assignment and harness optimization are next.
+  selection. Skill health now closes the outcome-to-retrieval feedback loop with quarantine and
+  recovery probes; finer causal credit assignment and harness optimization are next.
 
 ## License
 
