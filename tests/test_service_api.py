@@ -48,3 +48,26 @@ def test_learn_persists_portable_yaml(tmp_path: Path) -> None:
     content = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert content["name"] == skill.name
     assert content["workflow"] == experience.repair_steps
+
+
+def test_evaluation_api_rejects_threshold_violation() -> None:
+    response = TestClient(app).post(
+        "/v1/evaluate",
+        json={
+            "baseline": {"metrics": {"success_rate": 0.8}},
+            "candidate": {"metrics": {"success_rate": 0.7}},
+            "policy": {
+                "rules": [
+                    {
+                        "metric": "success_rate",
+                        "direction": "higher_is_better",
+                        "threshold": 0.75,
+                    }
+                ]
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] is False
+    assert "below minimum" in response.json()["rejection_reasons"][0]

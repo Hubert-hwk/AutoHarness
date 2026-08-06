@@ -18,6 +18,8 @@ and does not require an LLM or external service.
 - Issue-to-code localization using diagnosis signals, identifiers, paths, docstrings, and
   source text.
 - Repair recommendations and YAML skill generation from validated repair experiences.
+- Before/after evaluation gates with test requirements, hard thresholds, and per-metric
+  regression budgets.
 - CLI and FastAPI interfaces backed by the same application service.
 
 ```text
@@ -41,6 +43,7 @@ at the project root:
 ```bash
 uv sync --extra dev
 uv run autoharness analyze examples/retrieval_failure.json --repo .
+uv run autoharness evaluate examples/evaluation_gate.json
 uv run autoharness serve --reload
 ```
 
@@ -74,6 +77,17 @@ Create a reusable skill from a successful repair:
 autoharness learn repair.json --output skills/
 ```
 
+Evaluate a repair candidate against its baseline. The command exits with code `2` when a
+gate rejects the candidate, so it can be used directly in CI:
+
+```bash
+autoharness evaluate examples/evaluation_gate.json
+```
+
+Each metric declares whether higher or lower is better, an optional hard threshold, and
+the maximum relative regression it may tolerate. Candidate test failures are rejected by
+default.
+
 See [`examples/repair_experience.json`](examples/repair_experience.json) for the expected
 repair format.
 
@@ -100,14 +114,14 @@ To include code localization, wrap the trace in an analysis request:
 - `models.py` defines the stable domain and API contracts.
 - `diagnosis.py` contains the deterministic, inspectable failure taxonomy engine.
 - `code_graph.py` builds and queries a lightweight Python code graph.
+- `evaluation.py` enforces tests, metric thresholds, and regression budgets.
 - `skills.py` converts validated repairs into portable YAML skills.
 - `service.py` orchestrates the Observe → Diagnose → Localize → Learn workflow.
 - `api.py` and `cli.py` are transport adapters.
 
 The deterministic core is intentional: it provides a measurable baseline before adding an
 LLM diagnosis provider. Future phases will add patch generation in an isolated workspace,
-before/after evaluation gates, persistent trace storage, and feedback-driven harness
-optimization.
+persistent trace storage, and feedback-driven harness optimization.
 
 ## Development
 
@@ -132,11 +146,11 @@ uv run pytest
 ## Roadmap
 
 - **Phase 1 — Agent Debug Copilot:** trace ingestion, diagnosis, and code localization.
-- **Phase 2 — AutoFix Agent:** sandboxed patch generation, tests, and evaluation gates.
+- **Phase 2 — AutoFix Agent:** evaluation gates are available; sandboxed patch generation
+  and benchmark runners are next.
 - **Phase 3 — Self-Evolving Harness:** harness optimization, experience memory, and skill
   selection/evolution.
 
 ## License
 
 Apache License 2.0. See [`LICENSE`](LICENSE).
-

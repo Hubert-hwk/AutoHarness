@@ -9,7 +9,7 @@ from typing import Annotated
 import typer
 
 from autoharness.code_graph import PythonCodeGraph
-from autoharness.models import AgentTrace, RepairExperience
+from autoharness.models import AgentTrace, EvaluationRequest, RepairExperience
 from autoharness.service import AutoHarness
 
 app = typer.Typer(no_args_is_help=True, help="Diagnose and improve AI agent systems.")
@@ -54,6 +54,18 @@ def learn(
     experience = RepairExperience.model_validate(_load_json(repair_file))
     skill, path = AutoHarness().learn(experience, output)
     typer.echo(f"Created {skill.name} at {path}")
+
+
+@app.command()
+def evaluate(
+    evaluation_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+) -> None:
+    """Apply tests, thresholds, and regression gates to a repair candidate."""
+    request = EvaluationRequest.model_validate(_load_json(evaluation_file))
+    result = AutoHarness().evaluate(request.baseline, request.candidate, request.policy)
+    typer.echo(result.model_dump_json(indent=2))
+    if not result.accepted:
+        raise typer.Exit(code=2)
 
 
 @app.command()

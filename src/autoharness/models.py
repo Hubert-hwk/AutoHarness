@@ -41,6 +41,11 @@ class FailureType(StrEnum):
     UNKNOWN = "unknown_failure"
 
 
+class MetricDirection(StrEnum):
+    HIGHER_IS_BETTER = "higher_is_better"
+    LOWER_IS_BETTER = "lower_is_better"
+
+
 class TraceEvent(BaseModel):
     """One structured observation from an agent execution."""
 
@@ -119,6 +124,66 @@ class AnalysisResult(BaseModel):
     code_locations: list[CodeLocation] = Field(default_factory=list)
     indexed_files: int = 0
     indexed_symbols: int = 0
+
+
+class EvaluationSnapshot(BaseModel):
+    """Observed metrics and tests for one harness or repair candidate."""
+
+    run_id: str | None = None
+    metrics: dict[str, float] = Field(default_factory=dict)
+    tests_passed: bool = True
+    failed_tests: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MetricRule(BaseModel):
+    """Acceptance rule for one metric.
+
+    ``threshold`` is a minimum for higher-is-better metrics and a maximum for
+    lower-is-better metrics. Regression tolerances are relative to the baseline.
+    """
+
+    metric: str
+    direction: MetricDirection
+    required: bool = True
+    threshold: float | None = None
+    max_regression_ratio: float = Field(default=0.0, ge=0)
+
+    @field_validator("metric")
+    @classmethod
+    def metric_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("metric must not be blank")
+        return value.strip()
+
+
+class EvaluationPolicy(BaseModel):
+    rules: list[MetricRule] = Field(min_length=1)
+    require_tests: bool = True
+
+
+class EvaluationRequest(BaseModel):
+    baseline: EvaluationSnapshot
+    candidate: EvaluationSnapshot
+    policy: EvaluationPolicy
+
+
+class MetricComparison(BaseModel):
+    metric: str
+    direction: MetricDirection
+    baseline: float | None = None
+    candidate: float | None = None
+    delta: float | None = None
+    improvement_ratio: float | None = None
+    accepted: bool
+    reasons: list[str] = Field(default_factory=list)
+
+
+class EvaluationResult(BaseModel):
+    accepted: bool
+    summary: str
+    comparisons: list[MetricComparison]
+    rejection_reasons: list[str] = Field(default_factory=list)
 
 
 class RepairExperience(BaseModel):

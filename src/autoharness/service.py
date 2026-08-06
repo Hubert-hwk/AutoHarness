@@ -6,13 +6,23 @@ from pathlib import Path
 
 from autoharness.code_graph import PythonCodeGraph
 from autoharness.diagnosis import FailureDiagnoser
-from autoharness.models import AgentTrace, AnalysisResult, RepairExperience, Skill
+from autoharness.evaluation import EvaluationGate
+from autoharness.models import (
+    AgentTrace,
+    AnalysisResult,
+    EvaluationPolicy,
+    EvaluationResult,
+    EvaluationSnapshot,
+    RepairExperience,
+    Skill,
+)
 from autoharness.skills import SkillGenerator
 
 
 class AutoHarness:
     def __init__(self) -> None:
         self.diagnoser = FailureDiagnoser()
+        self.evaluation_gate = EvaluationGate()
         self.skill_generator = SkillGenerator()
 
     def analyze(
@@ -38,3 +48,11 @@ class AutoHarness:
     def learn(self, experience: RepairExperience, directory: str | Path) -> tuple[Skill, Path]:
         skill = self.skill_generator.from_experience(experience)
         return skill, self.skill_generator.save(skill, directory)
+
+    def evaluate(
+        self,
+        baseline: EvaluationSnapshot,
+        candidate: EvaluationSnapshot,
+        policy: EvaluationPolicy,
+    ) -> EvaluationResult:
+        return self.evaluation_gate.evaluate(baseline, candidate, policy)

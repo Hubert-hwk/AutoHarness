@@ -1,0 +1,46 @@
+{
+  "baseline": {
+    "run_id": "baseline-v1",
+    "metrics": {
+      "task_success_rate": 0.72,
+      "latency_ms": 950,
+      "cost_usd": 0.10,
+      "tool_calls": 4.2
+    }
+  },
+  "candidate": {
+    "run_id": "repair-v2",
+    "metrics": {
+      "task_success_rate": 0.86,
+      "latency_ms": 1010,
+      "cost_usd": 0.105,
+      "tool_calls": 4.0
+    },
+    "tests_passed": true
+  },
+  "policy": {
+    "require_tests": true,
+    "rules": [
+      {
+        "metric": "task_success_rate",
+        "direction": "higher_is_better",
+        "threshold": 0.8
+      },
+      {
+        "metric": "latency_ms",
+        "direction": "lower_is_better",
+        "max_regression_ratio": 0.1
+      },
+      {
+        "metric": "cost_usd",
+        "direction": "lower_is_better",
+        "max_regression_ratio": 0.1
+      },
+      {
+        "metric": "tool_calls",
+        "direction": "lower_is_better",
+        "max_regression_ratio": 0.1
+      }
+    ]
+  }
+}

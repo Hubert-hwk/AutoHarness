@@ -1,7 +1,18 @@
 """AutoHarness public package interface."""
 
-from autoharness.models import AgentTrace, AnalysisResult, FailureDiagnosis
+from autoharness.models import (
+    AgentTrace,
+    AnalysisResult,
+    EvaluationResult,
+    FailureDiagnosis,
+)
 from autoharness.service import AutoHarness
 
-__all__ = ["AgentTrace", "AnalysisResult", "AutoHarness", "FailureDiagnosis"]
-__version__ = "0.1.0"
+__all__ = [
+    "AgentTrace",
+    "AnalysisResult",
+    "AutoHarness",
+    "EvaluationResult",
+    "FailureDiagnosis",
+]
+__version__ = "0.2.0"
