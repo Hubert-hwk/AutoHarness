@@ -1,0 +1,22 @@
+{
+  "trace_id": "trace-demo-001",
+  "task": "Answer the user's question about the international reimbursement policy",
+  "events": [
+    {
+      "kind": "retrieval",
+      "name": "policy_retriever",
+      "status": "failure",
+      "input": {"query": "international reimbursement policy", "top_k": 3},
+      "output": [{"document": "domestic_policy.pdf", "score": 0.41}]
+    },
+    {
+      "kind": "response",
+      "name": "answer_generator",
+      "status": "success",
+      "output": "Use the standard domestic reimbursement workflow."
+    }
+  ],
+  "logs": ["retriever recall below threshold: 0.20"],
+  "feedback": "The answer is wrong because it did not retrieve the international policy."
+}
+

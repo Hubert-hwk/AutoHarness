@@ -1,0 +1,18 @@
+{
+  "title": "International policy retrieval repair",
+  "failure_type": "retrieval_failure",
+  "trigger_terms": ["international policy", "low recall", "wrong policy"],
+  "root_cause": "The region filter defaulted to domestic and excluded international documents.",
+  "repair_steps": [
+    "Inspect the query's region intent",
+    "Apply the international document filter when region intent is global",
+    "Increase top_k before reranking"
+  ],
+  "validation_steps": [
+    "Run the international policy retrieval benchmark",
+    "Require recall@5 to improve without regressing domestic queries"
+  ],
+  "affected_components": ["policy_retriever", "region_filter"],
+  "success_metrics": {"recall_at_5_before": 0.2, "recall_at_5_after": 0.9}
+}
+

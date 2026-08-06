@@ -1,0 +1,40 @@
+"""Application service orchestrating AutoHarness capabilities."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from autoharness.code_graph import PythonCodeGraph
+from autoharness.diagnosis import FailureDiagnoser
+from autoharness.models import AgentTrace, AnalysisResult, RepairExperience, Skill
+from autoharness.skills import SkillGenerator
+
+
+class AutoHarness:
+    def __init__(self) -> None:
+        self.diagnoser = FailureDiagnoser()
+        self.skill_generator = SkillGenerator()
+
+    def analyze(
+        self,
+        trace: AgentTrace,
+        repository_path: str | Path | None = None,
+        candidate_limit: int = 8,
+    ) -> AnalysisResult:
+        diagnosis = self.diagnoser.diagnose(trace)
+        if repository_path is None:
+            return AnalysisResult(diagnosis=diagnosis)
+
+        graph = PythonCodeGraph(repository_path)
+        stats = graph.build()
+        locations = graph.locate(diagnosis, limit=candidate_limit)
+        return AnalysisResult(
+            diagnosis=diagnosis,
+            code_locations=locations,
+            indexed_files=stats.files,
+            indexed_symbols=stats.symbols,
+        )
+
+    def learn(self, experience: RepairExperience, directory: str | Path) -> tuple[Skill, Path]:
+        skill = self.skill_generator.from_experience(experience)
+        return skill, self.skill_generator.save(skill, directory)
