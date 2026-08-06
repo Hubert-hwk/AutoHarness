@@ -173,8 +173,13 @@ def test_autofix_cli_runs_full_pipeline(tmp_path: Path) -> None:
     _, plan = _verification_files(tmp_path)
     (tmp_path / "generator.py").write_text(
         "import json, sys\n"
-        "json.load(sys.stdin)\n"
-        "sys.stdout.write('--- a/value.txt\\n+++ b/value.txt\\n@@ -1 +1 @@\\n-1\\n+2\\n')\n",
+        "context = json.load(sys.stdin)\n"
+        "candidate = 0 if not context['previous_attempts'] else 2\n"
+        "if context['previous_attempts']:\n"
+        "    assert context['previous_attempts'][-1]['phase'] == 'evaluation'\n"
+        "sys.stdout.write(\n"
+        "    f'--- a/value.txt\\n+++ b/value.txt\\n@@ -1 +1 @@\\n-1\\n+{candidate}\\n'\n"
+        ")\n",
         encoding="utf-8",
     )
     generator = tmp_path / "generator.json"
@@ -222,4 +227,8 @@ def test_autofix_cli_runs_full_pipeline(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert '"provider": "cli-generator"' in result.output
     assert '"status": "learned"' in result.output
+    payload = json.loads(result.output)
+    assert len(payload["attempts"]) == 2
+    assert payload["attempts"][0]["feedback"]["phase"] == "evaluation"
+    assert payload["attempts"][1]["feedback"]["phase"] == "complete"
     assert (tmp_path / "value.txt").read_text(encoding="utf-8") == "2\n"

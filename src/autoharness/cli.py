@@ -270,6 +270,7 @@ def autofix(
     ledger: Annotated[Path | None, typer.Option("--ledger")] = None,
     skills: Annotated[Path | None, typer.Option("--skills")] = None,
     skill_limit: Annotated[int, typer.Option("--skill-limit", min=1, max=50)] = 5,
+    max_attempts: Annotated[int, typer.Option("--max-attempts", min=1, max=10)] = 3,
     allow_command_execution: Annotated[bool, typer.Option("--allow-command-execution")] = False,
     apply_to_source: Annotated[bool, typer.Option("--apply-to-source")] = False,
 ) -> None:
@@ -297,6 +298,7 @@ def autofix(
             skill_directory=skill_directory,
             promote=apply_to_source,
             skill_limit=skill_limit,
+            max_attempts=max_attempts,
         )
     except (LedgerError, OSError, PatchGenerationError, VerificationError) as exc:
         typer.echo(f"Autofix failed: {exc}", err=True)

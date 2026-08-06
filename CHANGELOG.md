@@ -2,6 +2,16 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.6.0 - 2026-08-07
+
+- Add feedback-driven AutoFix retries with a configurable one-to-ten attempt budget.
+- Send prior generation failures, verification errors, metrics, and rejection reasons to the
+  next patch-generation attempt.
+- Capture failed evolution attempts as typed results while preserving original exception behavior.
+- Skip repeated verification for duplicate patches and retain attempt provenance in the ledger.
+- Stop retrying after successful source promotion to avoid operating on already-mutated source.
+- Add an adaptive two-attempt generator example and end-to-end retry tests.
+
 ## 0.5.0 - 2026-08-07
 
 - Add a typed patch-generator protocol with JSON context and unified-diff output.

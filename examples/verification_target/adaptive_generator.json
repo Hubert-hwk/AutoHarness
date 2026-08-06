@@ -1,0 +1,6 @@
+{
+  "name": "example-feedback-generator",
+  "argv": ["python", "adaptive_generator.py"],
+  "timeout_seconds": 30,
+  "max_patch_bytes": 65536
+}

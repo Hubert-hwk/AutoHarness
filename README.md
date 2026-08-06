@@ -26,6 +26,8 @@ pipeline that work locally without requiring an LLM or external service.
 - Pluggable patch generation through an isolated, JSON-in/unified-diff-out command protocol.
 - End-to-end AutoFix orchestration from diagnosis and Skill retrieval through verification,
   optional promotion, and learning.
+- Feedback-driven AutoFix retries with structured failures, evaluation metrics, rejection
+  reasons, and duplicate-patch suppression.
 - CLI and FastAPI interfaces backed by the same application service.
 
 ```text
@@ -177,6 +179,9 @@ autoharness autofix TRACE.json GENERATOR.json PLAN.json \
 AutoFix diagnoses the trace, retrieves relevant learned Skills, builds a typed generation
 context, runs the configured generator in a disposable repository copy, and verifies its
 unified diff against the baseline. The safe default does not modify the source checkout.
+It makes up to three attempts by default. Every later attempt receives the prior generation,
+verification, or evaluation outcomes through `previous_attempts`; use `--max-attempts 1..10`
+to control the retry budget. Identical patches are not benchmarked twice.
 Add `--apply-to-source` to promote an accepted patch and learn a versioned Skill:
 
 ```bash
@@ -199,11 +204,19 @@ output, and may write diagnostics to standard error:
 }
 ```
 
+The JSON context includes `attempt_number` and structured `previous_attempts` entries with
+the phase, candidate status, patch digest, before/after metrics, rejection reasons, and
+bounded errors. AutoHarness stores this provenance with the next candidate in the Repair
+Ledger. Once source promotion succeeds it will never retry, even if later Skill persistence
+fails, preventing a second repair from running against already-mutated source.
+
 Generator commands are trusted local processes, not an operating-system sandbox. AutoHarness
 protects the generator program from modifying itself, rejects malformed, binary, oversized,
 or unsafe patches, and never executes a generated shell command. See
 [`examples/verification_target/generator.json`](examples/verification_target/generator.json)
-for a minimal provider.
+for a minimal provider. The
+[`adaptive_generator.json`](examples/verification_target/adaptive_generator.json) example
+deliberately fails its first evaluation, consumes the feedback, and repairs the second attempt.
 
 See [`examples/repair_experience.json`](examples/repair_experience.json) for the expected
 repair format.
@@ -234,7 +247,8 @@ To include code localization, wrap the trace in an analysis request:
 - `evaluation.py` enforces tests, metric thresholds, and regression budgets.
 - `verification.py` validates patches and runs isolated before/after benchmarks.
 - `generation.py` defines the provider protocol and isolated command generator.
-- `autofix.py` orchestrates Diagnose -> Retrieve -> Generate -> Verify -> Promote -> Learn.
+- `autofix.py` orchestrates feedback-driven Diagnose -> Retrieve -> Generate -> Verify ->
+  Promote -> Learn attempts.
 - `RepairPipeline` promotes accepted candidates with stale-source detection and backups.
 - `ledger.py` persists the repair state machine and append-only lifecycle events in SQLite.
 - `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
@@ -271,8 +285,8 @@ uv run pytest
 
 - **Phase 1 - Agent Debug Copilot:** trace ingestion, diagnosis, and code localization.
 - **Phase 2 - AutoFix Agent:** evaluation, verification, guarded promotion, and repair
-  history plus pluggable isolated patch generation are available; model-backed providers and
-  richer benchmark adapters are next.
+  history plus pluggable isolated patch generation and feedback-driven retries are available;
+  model-backed providers and richer benchmark adapters are next.
 - **Phase 3 - Self-Evolving Harness:** versioned repair Skills and explainable retrieval are
   available; harness optimization and outcome-aware experience selection are next.
 

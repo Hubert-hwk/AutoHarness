@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -10,11 +11,20 @@ from autoharness.models import (
     CandidateStatus,
     EvolutionPipelineResult,
     PatchVerificationPlan,
+    RepairCandidateRecord,
     RepairExperience,
     RepairPipelineResult,
 )
 from autoharness.skills import SkillGenerator
 from autoharness.verification import RepairPipeline, SourceFingerprinter
+
+
+@dataclass(frozen=True)
+class EvolutionAttempt:
+    """Captured evolution outcome plus the original exception, when one occurred."""
+
+    result: EvolutionPipelineResult
+    error: Exception | None = None
 
 
 class EvolutionPipeline:
@@ -34,15 +44,42 @@ class EvolutionPipeline:
         experience: RepairExperience,
         *,
         promote: bool = True,
+        metadata: dict[str, Any] | None = None,
     ) -> EvolutionPipelineResult:
+        attempt = self.run_attempt(
+            repository,
+            patch,
+            plan,
+            experience,
+            promote=promote,
+            metadata=metadata,
+        )
+        if attempt.error is not None:
+            raise attempt.error
+        return attempt.result
+
+    def run_attempt(
+        self,
+        repository: str | Path,
+        patch: str,
+        plan: PatchVerificationPlan,
+        experience: RepairExperience,
+        *,
+        promote: bool = True,
+        metadata: dict[str, Any] | None = None,
+    ) -> EvolutionAttempt:
+        """Run one candidate while returning failures as auditable data for retry loops."""
         source = Path(repository).expanduser().resolve()
+        proposal_metadata = dict(metadata or {})
+        proposal_metadata["trigger_terms"] = experience.trigger_terms
         candidate = self.ledger.propose(
             title=experience.title,
             repository_path=source,
             patch_sha256=SourceFingerprinter.patch_sha256(patch),
             failure_type=experience.failure_type,
-            metadata={"trigger_terms": experience.trigger_terms},
+            metadata=proposal_metadata,
         )
+        repair: RepairPipelineResult | None = None
         try:
             repair = self.repair_pipeline.run(source, patch, plan, promote=promote)
             verification = repair.verification
@@ -61,7 +98,7 @@ class EvolutionPipeline:
                     details=verification_details,
                     changed_paths=verification.changed_paths,
                 )
-                return EvolutionPipelineResult(candidate=candidate, repair=repair)
+                return EvolutionAttempt(EvolutionPipelineResult(candidate=candidate, repair=repair))
 
             candidate = self.ledger.transition(
                 candidate.candidate_id,
@@ -70,7 +107,7 @@ class EvolutionPipeline:
                 changed_paths=verification.changed_paths,
             )
             if repair.promotion is None:
-                return EvolutionPipelineResult(candidate=candidate, repair=repair)
+                return EvolutionAttempt(EvolutionPipelineResult(candidate=candidate, repair=repair))
 
             candidate = self.ledger.transition(
                 candidate.candidate_id,
@@ -91,27 +128,47 @@ class EvolutionPipeline:
                 CandidateStatus.LEARNED,
                 details={"skill_path": str(skill_path), "skill_version": skill.version},
             )
-            return EvolutionPipelineResult(
-                candidate=candidate,
-                repair=repair,
-                skill=skill,
-                skill_path=str(skill_path),
+            return EvolutionAttempt(
+                EvolutionPipelineResult(
+                    candidate=candidate,
+                    repair=repair,
+                    skill=skill,
+                    skill_path=str(skill_path),
+                )
             )
         except Exception as exc:
-            self._record_failure(candidate.candidate_id, exc)
-            raise
+            candidate = self._record_failure(candidate.candidate_id, exc)
+            error_text = self._error_text(exc)
+            return EvolutionAttempt(
+                EvolutionPipelineResult(
+                    candidate=candidate,
+                    repair=repair,
+                    error_type=type(exc).__name__,
+                    error=error_text,
+                ),
+                exc,
+            )
 
-    def _record_failure(self, candidate_id: str, error: Exception) -> None:
+    def _record_failure(self, candidate_id: str, error: Exception) -> RepairCandidateRecord:
         try:
             current = self.ledger.get(candidate_id)
             if CandidateStatus.FAILED in ALLOWED_TRANSITIONS[current.status]:
-                self.ledger.transition(
+                return self.ledger.transition(
                     candidate_id,
                     CandidateStatus.FAILED,
-                    details={"error": str(error), "error_type": type(error).__name__},
+                    details={
+                        "error": self._error_text(error),
+                        "error_type": type(error).__name__,
+                        "failed_from_status": current.status.value,
+                    },
                 )
         except LedgerError:
-            return
+            pass
+        return self.ledger.get(candidate_id)
+
+    @staticmethod
+    def _error_text(error: Exception) -> str:
+        return str(error)[-4000:]
 
     @staticmethod
     def _enrich_experience(

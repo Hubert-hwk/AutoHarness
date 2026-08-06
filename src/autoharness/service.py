@@ -132,6 +132,7 @@ class AutoHarness:
         skill_directory: str | Path,
         promote: bool = False,
         skill_limit: int = 5,
+        max_attempts: int = 3,
     ) -> AutoFixPipelineResult:
         pipeline = AutoFixPipeline(
             generator,
@@ -144,4 +145,5 @@ class AutoHarness:
             verification_plan,
             promote=promote,
             skill_limit=skill_limit,
+            max_attempts=max_attempts,
         )

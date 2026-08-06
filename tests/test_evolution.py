@@ -151,6 +151,27 @@ def test_evolution_pipeline_records_failure(tmp_path: Path) -> None:
     record = ledger.list_candidates()[0]
     assert record.status == CandidateStatus.FAILED
     assert record.metadata["error_type"] == "VerificationError"
+    assert record.metadata["failed_from_status"] == CandidateStatus.PROPOSED
+
+
+def test_evolution_attempt_captures_original_error_for_retry(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "repository")
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    unsafe_patch = "--- a/../secret\n+++ b/../secret\n@@ -1 +1 @@\n-a\n+b\n"
+
+    attempt = EvolutionPipeline(ledger, tmp_path / "skills").run_attempt(
+        repository,
+        unsafe_patch,
+        _plan(),
+        _experience(),
+        metadata={"autofix_attempt": 1},
+    )
+
+    assert isinstance(attempt.error, VerificationError)
+    assert attempt.result.error_type == "VerificationError"
+    assert attempt.result.repair is None
+    assert attempt.result.candidate.status == CandidateStatus.FAILED
+    assert attempt.result.candidate.metadata["autofix_attempt"] == 1
 
 
 def test_versioned_skill_history_is_preserved(tmp_path: Path) -> None:

@@ -55,6 +55,16 @@ class CandidateStatus(StrEnum):
     FAILED = "failed"
 
 
+class AutoFixPhase(StrEnum):
+    GENERATION = "generation"
+    DEDUPLICATION = "deduplication"
+    VERIFICATION = "verification"
+    EVALUATION = "evaluation"
+    PROMOTION = "promotion"
+    LEARNING = "learning"
+    COMPLETE = "complete"
+
+
 class TraceEvent(BaseModel):
     """One structured observation from an agent execution."""
 
@@ -341,9 +351,11 @@ class RepairCandidateEvent(BaseModel):
 
 class EvolutionPipelineResult(BaseModel):
     candidate: RepairCandidateRecord
-    repair: RepairPipelineResult
+    repair: RepairPipelineResult | None = None
     skill: Skill | None = None
     skill_path: str | None = None
+    error_type: str | None = None
+    error: str | None = None
 
 
 class SkillQuery(BaseModel):
@@ -401,11 +413,29 @@ class PatchGeneratorConfig(BaseModel):
         return value
 
 
+class AutoFixAttemptFeedback(BaseModel):
+    attempt_number: int = Field(ge=1, le=10)
+    phase: AutoFixPhase
+    provider: str
+    accepted: bool = False
+    patch_sha256: str | None = None
+    candidate_id: str | None = None
+    status: CandidateStatus | None = None
+    evaluation_summary: str | None = None
+    rejection_reasons: list[str] = Field(default_factory=list)
+    metrics_before: dict[str, float] = Field(default_factory=dict)
+    metrics_after: dict[str, float] = Field(default_factory=dict)
+    error_type: str | None = None
+    error: str | None = None
+
+
 class PatchGenerationContext(BaseModel):
     trace: AgentTrace
     diagnosis: FailureDiagnosis
     code_locations: list[CodeLocation] = Field(default_factory=list)
     skill_matches: list[SkillMatch] = Field(default_factory=list)
+    attempt_number: int = Field(default=1, ge=1, le=10)
+    previous_attempts: list[AutoFixAttemptFeedback] = Field(default_factory=list)
 
 
 class GeneratedPatch(BaseModel):
@@ -417,7 +447,15 @@ class GeneratedPatch(BaseModel):
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class AutoFixAttemptResult(BaseModel):
+    attempt_number: int = Field(ge=1, le=10)
+    generated_patch: GeneratedPatch | None = None
+    evolution: EvolutionPipelineResult | None = None
+    feedback: AutoFixAttemptFeedback
+
+
 class AutoFixPipelineResult(BaseModel):
     recommendation: SkillRecommendationResult
     generated_patch: GeneratedPatch
     evolution: EvolutionPipelineResult
+    attempts: list[AutoFixAttemptResult] = Field(default_factory=list)
