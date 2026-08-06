@@ -23,6 +23,7 @@ from autoharness.models import (
     AgentTrace,
     AutoFixAttemptFeedback,
     AutoFixPhase,
+    FailureType,
     OpenAIPatchGeneratorConfig,
     PatchGenerationContext,
     PatchGeneratorConfig,
@@ -429,7 +430,9 @@ def test_adaptive_generator_explores_under_sampled_then_uses_bayesian_ucb() -> N
     adaptive.configure_outcomes(
         {"first": _provider_stats("first", observations=1, succeeded=1, posterior=0.6)}
     )
+    adaptive.configure_selection_context(FailureType.REASONING)
     assert adaptive.provider_name == "second"
+    assert adaptive.selection_metadata.failure_type == FailureType.REASONING
     assert adaptive.selection_metadata.exploration
     assert "least-observed" in adaptive.selection_metadata.reason
     assert adaptive.selection_metadata.minimum_trials == 2

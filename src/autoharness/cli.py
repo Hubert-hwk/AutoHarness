@@ -23,6 +23,7 @@ from autoharness.models import (
     AutoFixRunStatus,
     CandidateStatus,
     EvaluationRequest,
+    FailureType,
     PatchVerificationPlan,
     RepairExperience,
 )
@@ -308,10 +309,15 @@ def provider_outcomes(
         Path | None,
         typer.Option("--repo", exists=True, file_okay=False, readable=True),
     ] = None,
+    failure_type: Annotated[FailureType | None, typer.Option("--failure-type")] = None,
     limit: Annotated[int, typer.Option("--limit", min=1, max=50_000)] = 5000,
 ) -> None:
-    """Show repository-scoped generator outcome evidence used by adaptive portfolios."""
-    outcomes = RepairLedger(ledger).provider_outcomes(repository_path=repo, limit=limit)
+    """Show contextual generator outcome evidence used by adaptive portfolios."""
+    outcomes = RepairLedger(ledger).provider_outcomes(
+        repository_path=repo,
+        failure_type=failure_type,
+        limit=limit,
+    )
     ordered = sorted(outcomes.values(), key=lambda item: (-item.observations, item.provider))
     typer.echo(json.dumps([item.model_dump(mode="json") for item in ordered], indent=2))
 

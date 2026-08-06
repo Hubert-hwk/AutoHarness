@@ -412,6 +412,7 @@ def test_provider_outcomes_cli_reports_repository_evidence(tmp_path: Path) -> No
         max_attempts=1,
         promote_requested=False,
     )
+    ledger.record_autofix_diagnosis(run.run_id, FailureType.REASONING)
     ledger.record_autofix_attempt(
         run.run_id,
         AutoFixAttemptFeedback(
@@ -422,6 +423,24 @@ def test_provider_outcomes_cli_reports_repository_evidence(tmp_path: Path) -> No
         ),
     )
     ledger.finish_autofix_run(run.run_id, AutoFixRunStatus.SUCCEEDED)
+    unrelated = ledger.start_autofix_run(
+        repository_path=tmp_path,
+        trace=AgentTrace(task="Retrieval provider outcome"),
+        generator_provider="retrieval-provider",
+        max_attempts=1,
+        promote_requested=False,
+    )
+    ledger.record_autofix_diagnosis(unrelated.run_id, FailureType.RETRIEVAL)
+    ledger.record_autofix_attempt(
+        unrelated.run_id,
+        AutoFixAttemptFeedback(
+            attempt_number=1,
+            phase=AutoFixPhase.COMPLETE,
+            provider="retrieval-provider",
+            accepted=True,
+        ),
+    )
+    ledger.finish_autofix_run(unrelated.run_id, AutoFixRunStatus.SUCCEEDED)
 
     result = CliRunner().invoke(
         app,
@@ -431,6 +450,8 @@ def test_provider_outcomes_cli_reports_repository_evidence(tmp_path: Path) -> No
             str(ledger_path),
             "--repo",
             str(tmp_path),
+            "--failure-type",
+            FailureType.REASONING.value,
         ],
     )
 
@@ -439,6 +460,8 @@ def test_provider_outcomes_cli_reports_repository_evidence(tmp_path: Path) -> No
     assert payload[0]["provider"] == "local-provider"
     assert payload[0]["observations"] == 1
     assert payload[0]["succeeded"] == 1
+    assert payload[0]["failure_type"] == FailureType.REASONING.value
+    assert len(payload) == 1
 
 
 def test_skill_outcomes_cli_and_outcome_aware_recommendation(tmp_path: Path) -> None:

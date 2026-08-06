@@ -244,6 +244,32 @@ class RepairLedger:
             )
         return self.get_autofix_run(run_id)
 
+    def record_autofix_diagnosis(
+        self,
+        run_id: str,
+        failure_type: FailureType,
+    ) -> AutoFixRunRecord:
+        """Attach the diagnosed failure context before the first provider attempt."""
+        now = self._now()
+        with self._connection() as connection:
+            updated = connection.execute(
+                """
+                UPDATE autofix_runs
+                SET failure_type = ?, updated_at = ?
+                WHERE run_id = ? AND status = ?
+                """,
+                (failure_type.value, now, run_id, AutoFixRunStatus.RUNNING.value),
+            )
+            if updated.rowcount != 1:
+                row = connection.execute(
+                    "SELECT status FROM autofix_runs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+                if row is None:
+                    raise LedgerError(f"Unknown AutoFix run: {run_id}")
+                raise LedgerError(f"AutoFix run is already terminal: {run_id}")
+        return self.get_autofix_run(run_id)
+
     def update_autofix_generator_selection(
         self,
         run_id: str,
@@ -593,45 +619,36 @@ class RepairLedger:
         self,
         *,
         repository_path: str | Path | None = None,
+        failure_type: FailureType | None = None,
         limit: int = 5000,
     ) -> dict[str, ProviderOutcomeStats]:
-        """Aggregate one outcome per run/provider pair from actual attempt evidence."""
+        """Aggregate attempted provider outcomes in an optional diagnosis context."""
         bounded_limit = max(1, min(limit, 50_000))
-        query = """
+        conditions = ["status != ?"]
+        parameter_values: list[Any] = [AutoFixRunStatus.RUNNING.value]
+        if repository_path is not None:
+            conditions.append("repository_path = ?")
+            parameter_values.append(str(Path(repository_path).expanduser().resolve()))
+        if failure_type is not None:
+            conditions.append("failure_type = ?")
+            parameter_values.append(failure_type.value)
+        parameter_values.append(bounded_limit)
+        where_clause = " AND ".join(conditions)
+        query = f"""
             SELECT recent.run_id, recent.generator_provider, recent.status, recent.updated_at,
                    a.attempt_number, a.feedback
             FROM (
                 SELECT run_id, generator_provider, status, updated_at
                 FROM autofix_runs
-                WHERE status != ?
+                WHERE {where_clause}
                 ORDER BY updated_at DESC
                 LIMIT ?
             ) AS recent
             LEFT JOIN autofix_attempts AS a ON a.run_id = recent.run_id
             ORDER BY recent.updated_at DESC, a.attempt_number
         """
-        parameters: tuple[Any, ...] = (AutoFixRunStatus.RUNNING.value, bounded_limit)
-        if repository_path is not None:
-            query = """
-                SELECT recent.run_id, recent.generator_provider, recent.status,
-                       recent.updated_at, a.attempt_number, a.feedback
-                FROM (
-                    SELECT run_id, generator_provider, status, updated_at
-                    FROM autofix_runs
-                    WHERE status != ? AND repository_path = ?
-                    ORDER BY updated_at DESC
-                    LIMIT ?
-                ) AS recent
-                LEFT JOIN autofix_attempts AS a ON a.run_id = recent.run_id
-                ORDER BY recent.updated_at DESC, a.attempt_number
-            """
-            parameters = (
-                AutoFixRunStatus.RUNNING.value,
-                str(Path(repository_path).expanduser().resolve()),
-                bounded_limit,
-            )
         with self._connection() as connection:
-            rows = connection.execute(query, parameters).fetchall()
+            rows = connection.execute(query, tuple(parameter_values)).fetchall()
 
         runs: dict[str, dict[str, Any]] = {}
         for row in rows:
@@ -689,6 +706,7 @@ class RepairLedger:
             confidence = observations / (observations + 5)
             results[provider] = ProviderOutcomeStats(
                 provider=provider,
+                failure_type=failure_type,
                 observations=observations,
                 succeeded=counts["succeeded"],
                 rejected=counts["rejected"],
@@ -851,6 +869,7 @@ class RepairLedger:
                     trace_json TEXT,
                     generator_provider TEXT NOT NULL,
                     generator_selection TEXT,
+                    failure_type TEXT,
                     max_attempts INTEGER NOT NULL,
                     promote_requested INTEGER NOT NULL,
                     status TEXT NOT NULL,
@@ -893,18 +912,49 @@ class RepairLedger:
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(autofix_runs)").fetchall()
             }
-            if "generator_selection" not in run_columns:
+            for column, declaration in (
+                ("generator_selection", "generator_selection TEXT"),
+                ("failure_type", "failure_type TEXT"),
+            ):
+                if column in run_columns:
+                    continue
                 try:
-                    connection.execute(
-                        "ALTER TABLE autofix_runs ADD COLUMN generator_selection TEXT"
-                    )
+                    connection.execute(f"ALTER TABLE autofix_runs ADD COLUMN {declaration}")
                 except sqlite3.OperationalError:
                     refreshed = {
                         str(row["name"])
                         for row in connection.execute("PRAGMA table_info(autofix_runs)").fetchall()
                     }
-                    if "generator_selection" not in refreshed:
+                    if column not in refreshed:
                         raise
+            connection.execute(
+                """
+                UPDATE autofix_runs
+                SET failure_type = (
+                    SELECT candidate.failure_type
+                    FROM autofix_attempts AS attempt
+                    JOIN repair_candidates AS candidate
+                      ON candidate.candidate_id = attempt.candidate_id
+                    WHERE attempt.run_id = autofix_runs.run_id
+                    ORDER BY attempt.attempt_number DESC
+                    LIMIT 1
+                )
+                WHERE failure_type IS NULL
+                  AND EXISTS (
+                    SELECT 1
+                    FROM autofix_attempts AS attempt
+                    JOIN repair_candidates AS candidate
+                      ON candidate.candidate_id = attempt.candidate_id
+                    WHERE attempt.run_id = autofix_runs.run_id
+                  )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_autofix_runs_provider_context
+                ON autofix_runs(repository_path, failure_type, updated_at)
+                """
+            )
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -969,6 +1019,7 @@ class RepairLedger:
                 if selection_json is not None
                 else None
             ),
+            failure_type=(FailureType(row["failure_type"]) if row["failure_type"] else None),
             max_attempts=row["max_attempts"],
             promote_requested=bool(row["promote_requested"]),
             status=AutoFixRunStatus(row["status"]),

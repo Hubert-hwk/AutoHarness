@@ -29,6 +29,8 @@ pipeline that work locally without requiring an LLM or external service.
   Responses API provider.
 - Explainable adaptive generator portfolios that learn from repository-scoped run outcomes,
   sample every provider, and retain controlled exploration.
+- Failure-type-aware provider learning that selects specialists independently for planning,
+  retrieval, tool, memory, reasoning, validation, and unknown failures.
 - In-run provider failover that preserves retry feedback while routing generation outages and
   duplicate patches to another portfolio member.
 - End-to-end AutoFix orchestration from diagnosis and Skill retrieval through verification,
@@ -207,8 +209,9 @@ unified diff against the baseline. The safe default does not modify the source c
 It makes up to three attempts by default. Every later attempt receives the prior generation,
 verification, or evaluation outcomes through `previous_attempts`; use `--max-attempts 1..10`
 to control the retry budget. Identical patches are not benchmarked twice.
-Each invocation creates a durable `run_id` before diagnosis or generation begins, so successful,
-rejected, and failed runs remain queryable even when no valid patch was produced.
+Each invocation creates a durable `run_id` before diagnosis or generation begins, then attaches the
+diagnosed failure type before the first provider attempt. Successful, rejected, and failed runs
+remain queryable even when no valid patch was produced.
 Add `--apply-to-source` to promote an accepted patch and learn a versioned Skill:
 
 ```bash
@@ -313,6 +316,14 @@ and generation attempts count as failures only for providers that were actually 
 interrupted runs are reported but excluded from quality observations because no terminal judgment
 was reached.
 
+Selection is contextual. AutoHarness creates the durable run record first, diagnoses the Trace,
+stores the resulting `failure_type`, and then re-selects from outcomes matching both the repository
+and diagnosis. A provider's retrieval history therefore cannot make it the preferred reasoning
+provider. Each failure category receives its own minimum-sampling and UCB exploration cycle;
+missing contextual evidence starts from the neutral Beta(2,2) prior instead of silently borrowing
+another category. Runs that fail before diagnosis remain auditable with a null failure type and do
+not enter contextual provider evidence.
+
 Within one AutoFix run, the default `failover_phases` routes generation errors and duplicate
 patches to the highest-scored provider not yet tried in that run. After every provider has been
 tried, it reuses the best alternative rather than immediately repeating the latest failure. Add
@@ -329,18 +340,21 @@ aggregates independently:
 ```bash
 autoharness provider-outcomes \
   --ledger PATH/.autoharness/ledger.db \
-  --repo PATH
+  --repo PATH \
+  --failure-type reasoning_failure
 ```
 
 Aggregation reads the newest 5,000 terminal runs by default; use `--limit` to choose a different
-bounded history window. Evidence is classified once per run/provider pair from immutable attempt
-records: any accepted attempt is a success, an evaluated rejection without later success is a
-rejection, and other terminal attempted work is a failure. Runs that fail before invoking a
-generator are excluded instead of blaming the configured provider. Existing ledgers and v0.11
-selection JSON remain readable. If any portfolio child is a network provider,
-`--allow-network-generation` is required even when the provider selected for a particular run is
-local. Every command program in the portfolio is protected from generated patches, not only the
-currently selected program. See
+bounded history window. Omit `--failure-type` for the repository-wide aggregate. Filtered output
+labels every row with its failure type. Evidence is classified once per run/provider pair from
+immutable attempt records: any accepted attempt is a success, an evaluated rejection without later
+success is a rejection, and other terminal attempted work is a failure. Runs that fail before
+invoking a generator are excluded instead of blaming the configured provider. Existing ledgers
+and v0.11 selection JSON remain readable; historical run contexts are backfilled when a linked
+candidate provides reliable evidence and otherwise remain null. If any portfolio child is a
+network provider, `--allow-network-generation` is required even when the provider selected for a
+particular run is local. Every command program in the portfolio is protected from generated
+patches, not only the currently selected program. See
 [`adaptive_portfolio.json`](examples/verification_target/adaptive_portfolio.json) for cross-run
 exploration and [`failover_portfolio.json`](examples/verification_target/failover_portfolio.json)
 for deterministic in-run recovery.
@@ -427,8 +441,9 @@ To include code localization, wrap the trace in an analysis request:
   Promote -> Learn attempts.
 - `RepairPipeline` promotes accepted candidates with stale-source detection and backups.
 - `ledger.py` persists heartbeat-backed AutoFix runs, immutable attempts, atomic interruption
-  recovery, provider selection and failover evidence, attempt-aware repository-scoped outcomes,
-  the repair state machine, append-only lifecycle events, and Skill outcome associations in SQLite.
+  recovery, diagnosed failure context, provider selection and failover evidence, attempt-aware
+  repository-and-failure-scoped outcomes, the repair state machine, append-only lifecycle events,
+  and Skill outcome associations in SQLite.
 - `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
 - `skills.py` converts validated repairs into portable YAML skills.
 - `registry.py` safely indexes and ranks the latest learned Skill versions with conservative,
@@ -469,8 +484,8 @@ uv run pytest
   consumes verification and retry feedback; richer benchmark adapters are next.
 - **Phase 3 - Self-Evolving Harness:** versioned repair Skills and explainable retrieval are
   available with outcome-aware selection. Adaptive provider portfolios now perform controlled,
-  auditable exploration and attempt-aware failover attribution; causal credit assignment and
-  harness optimization are next.
+  auditable exploration, attempt-aware failover attribution, and failure-type-specialized
+  selection; causal credit assignment and harness optimization are next.
 
 ## License
 

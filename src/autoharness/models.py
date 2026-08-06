@@ -526,6 +526,7 @@ class AdaptivePatchGeneratorConfig(BaseModel):
 
 class ProviderOutcomeStats(BaseModel):
     provider: str
+    failure_type: FailureType | None = None
     observations: int = Field(ge=0)
     succeeded: int = Field(ge=0)
     rejected: int = Field(ge=0)
@@ -559,6 +560,7 @@ class ProviderSelection(BaseModel):
     portfolio: str = "adaptive"
     minimum_trials: int = Field(default=1, ge=1)
     exploration_weight: float = Field(default=0, ge=0)
+    failure_type: FailureType | None = None
     selected_provider: str
     initial_selected_provider: str | None = None
     exploration: bool
@@ -618,6 +620,7 @@ class AutoFixRunRecord(BaseModel):
     trace_persisted: bool = False
     generator_provider: str
     generator_selection: ProviderSelection | None = None
+    failure_type: FailureType | None = None
     max_attempts: int = Field(ge=1, le=10)
     promote_requested: bool
     status: AutoFixRunStatus

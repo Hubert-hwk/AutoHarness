@@ -15,6 +15,7 @@ from openai import OpenAI
 
 from autoharness.models import (
     AdaptivePatchGeneratorConfig,
+    FailureType,
     GeneratedPatch,
     OpenAIPatchGeneratorConfig,
     PatchGenerationContext,
@@ -595,6 +596,9 @@ class AdaptivePatchGenerator:
             reason=reason,
             candidates=candidates,
         )
+
+    def configure_selection_context(self, failure_type: FailureType | None) -> None:
+        self._selection = self._selection.model_copy(update={"failure_type": failure_type})
 
     def generate(
         self,

@@ -21,6 +21,7 @@ from autoharness.models import (
     AutoFixRunStatus,
     CandidateStatus,
     EvolutionPipelineResult,
+    FailureType,
     GeneratedPatch,
     PatchGenerationContext,
     PatchVerificationPlan,
@@ -127,6 +128,10 @@ class AutoFixPipeline:
             allow_missing_directory=True,
             outcome_stats=self.ledger.skill_outcomes(repository_path=source),
         )
+        failure_type = recommendation.diagnosis.failure_type
+        self.ledger.record_autofix_diagnosis(run.run_id, failure_type)
+        self._configure_generator(source, failure_type=failure_type)
+        self._sync_generator_selection(run.run_id)
         self.ledger.heartbeat_autofix_run(run.run_id)
         protected_paths = list(
             dict.fromkeys(
@@ -332,10 +337,23 @@ class AutoFixPipeline:
     def _provider_name(self) -> str:
         return generator_provider_name(self.generator)
 
-    def _configure_generator(self, repository: Path) -> None:
+    def _configure_generator(
+        self,
+        repository: Path,
+        *,
+        failure_type: FailureType | None = None,
+    ) -> None:
         configure = getattr(self.generator, "configure_outcomes", None)
         if callable(configure):
-            configure(self.ledger.provider_outcomes(repository_path=repository))
+            configure(
+                self.ledger.provider_outcomes(
+                    repository_path=repository,
+                    failure_type=failure_type,
+                )
+            )
+        contextualize = getattr(self.generator, "configure_selection_context", None)
+        if callable(contextualize):
+            contextualize(failure_type)
 
     def _generator_selection(self) -> ProviderSelection | None:
         selection = getattr(self.generator, "selection_metadata", None)

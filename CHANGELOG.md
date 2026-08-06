@@ -2,6 +2,16 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.13.0 - 2026-08-07
+
+- Persist the diagnosed failure type on every AutoFix run before its first provider attempt.
+- Re-select adaptive providers from repository-and-failure-type outcome evidence after diagnosis.
+- Keep run creation ahead of diagnosis so early pipeline failures remain durably auditable.
+- Isolate planning, retrieval, tool, memory, reasoning, validation, and unknown provider histories.
+- Add optional failure-type filtering to `provider-outcomes` and label its returned evidence.
+- Migrate existing ledgers in place and backfill context from linked historical repair candidates.
+- Add context isolation, global-versus-specialist selection, CLI, migration, and lifecycle tests.
+
 ## 0.12.0 - 2026-08-07
 
 - Fail over within an AutoFix run when an adaptive provider cannot generate progress.

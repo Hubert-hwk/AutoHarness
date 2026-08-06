@@ -17,6 +17,7 @@ from autoharness.ledger import RepairLedger
 from autoharness.models import (
     AdaptivePatchGeneratorConfig,
     AgentTrace,
+    AutoFixAttemptFeedback,
     AutoFixPhase,
     AutoFixRunStatus,
     BenchmarkCommand,
@@ -507,6 +508,82 @@ def test_autofix_adaptive_portfolio_fails_over_and_attributes_each_provider(
     outcomes = ledger.provider_outcomes(repository_path=repository)
     assert outcomes["unavailable-provider"].failed == 1
     assert outcomes["working-provider"].succeeded == 1
+
+
+def test_autofix_adaptive_selection_uses_diagnosed_failure_type_context(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "repository")
+    ledger = RepairLedger(tmp_path / "ledger.db")
+
+    def seed(provider: str, failure_type: FailureType, *, accepted: bool) -> None:
+        run = ledger.start_autofix_run(
+            repository_path=repository,
+            trace=AgentTrace(task=f"Seed {provider} {failure_type.value}"),
+            generator_provider=provider,
+            max_attempts=1,
+            promote_requested=False,
+        )
+        ledger.record_autofix_diagnosis(run.run_id, failure_type)
+        ledger.record_autofix_attempt(
+            run.run_id,
+            AutoFixAttemptFeedback(
+                attempt_number=1,
+                phase=AutoFixPhase.COMPLETE if accepted else AutoFixPhase.GENERATION,
+                provider=provider,
+                accepted=accepted,
+            ),
+        )
+        ledger.finish_autofix_run(
+            run.run_id,
+            AutoFixRunStatus.SUCCEEDED if accepted else AutoFixRunStatus.FAILED,
+        )
+
+    seed("generalist", FailureType.REASONING, accepted=False)
+    seed("reasoner", FailureType.REASONING, accepted=True)
+    for _ in range(3):
+        seed("generalist", FailureType.RETRIEVAL, accepted=True)
+        seed("reasoner", FailureType.RETRIEVAL, accepted=False)
+
+    first = CommandPatchGenerator(
+        PatchGeneratorConfig(
+            name="generalist",
+            argv=[sys.executable, "generator.py"],
+        )
+    )
+    second = CommandPatchGenerator(
+        PatchGeneratorConfig(
+            name="reasoner",
+            argv=[sys.executable, "generator.py"],
+        )
+    )
+    adaptive = AdaptivePatchGenerator(
+        AdaptivePatchGeneratorConfig(
+            providers=[
+                {"name": "generalist", "argv": [sys.executable, "generator.py"]},
+                {"name": "reasoner", "argv": [sys.executable, "generator.py"]},
+            ],
+            minimum_trials=1,
+            exploration_weight=0,
+        ),
+        [first, second],
+    )
+    adaptive.configure_outcomes(ledger.provider_outcomes(repository_path=repository))
+    assert adaptive.provider_name == "generalist"
+
+    result = AutoFixPipeline(adaptive, ledger, tmp_path / "skills").run(
+        _trace(),
+        repository,
+        _plan(),
+        max_attempts=1,
+    )
+
+    assert result.run.status == AutoFixRunStatus.SUCCEEDED
+    assert result.run.failure_type == FailureType.REASONING
+    assert result.run.generator_provider == "reasoner"
+    assert result.run.generator_selection is not None
+    assert result.run.generator_selection.failure_type == FailureType.REASONING
+    assert result.run.generator_selection.initial_selected_provider == "reasoner"
 
 
 def test_autofix_never_retries_after_source_was_promoted(

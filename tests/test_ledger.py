@@ -571,6 +571,102 @@ def test_provider_outcomes_attribute_failover_to_each_attempted_provider(
     assert "not-invoked" not in outcomes
 
 
+def test_provider_outcomes_are_isolated_by_diagnosed_failure_type(tmp_path: Path) -> None:
+    ledger = RepairLedger(tmp_path / "ledger.db")
+
+    def record(
+        provider: str,
+        failure_type: FailureType,
+        *,
+        accepted: bool,
+    ) -> str:
+        run = ledger.start_autofix_run(
+            repository_path=tmp_path,
+            trace=AgentTrace(task=f"{failure_type.value} with {provider}"),
+            generator_provider=provider,
+            max_attempts=1,
+            promote_requested=False,
+        )
+        diagnosed = ledger.record_autofix_diagnosis(run.run_id, failure_type)
+        assert diagnosed.failure_type == failure_type
+        ledger.record_autofix_attempt(
+            run.run_id,
+            AutoFixAttemptFeedback(
+                attempt_number=1,
+                phase=AutoFixPhase.COMPLETE if accepted else AutoFixPhase.GENERATION,
+                provider=provider,
+                accepted=accepted,
+            ),
+        )
+        ledger.finish_autofix_run(
+            run.run_id,
+            AutoFixRunStatus.SUCCEEDED if accepted else AutoFixRunStatus.FAILED,
+        )
+        return run.run_id
+
+    reasoning_run = record("reasoner", FailureType.REASONING, accepted=True)
+    record("reasoner", FailureType.RETRIEVAL, accepted=False)
+    record("retriever", FailureType.REASONING, accepted=False)
+    record("retriever", FailureType.RETRIEVAL, accepted=True)
+
+    reasoning = ledger.provider_outcomes(
+        repository_path=tmp_path,
+        failure_type=FailureType.REASONING,
+    )
+    retrieval = ledger.provider_outcomes(
+        repository_path=tmp_path,
+        failure_type=FailureType.RETRIEVAL,
+    )
+    global_outcomes = ledger.provider_outcomes(repository_path=tmp_path)
+
+    assert reasoning["reasoner"].succeeded == 1
+    assert reasoning["reasoner"].failure_type == FailureType.REASONING
+    assert reasoning["retriever"].failed == 1
+    assert retrieval["retriever"].succeeded == 1
+    assert retrieval["reasoner"].failed == 1
+    assert global_outcomes["reasoner"].observations == 2
+    assert global_outcomes["reasoner"].failure_type is None
+    with pytest.raises(LedgerError, match="already terminal"):
+        ledger.record_autofix_diagnosis(reasoning_run, FailureType.TOOL)
+
+
+def test_ledger_backfills_failure_type_from_historical_candidate_attempt(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "ledger.db"
+    ledger = RepairLedger(database)
+    run = ledger.start_autofix_run(
+        repository_path=tmp_path,
+        trace=AgentTrace(task="Historical contextual repair"),
+        generator_provider="historical",
+        max_attempts=1,
+        promote_requested=False,
+    )
+    candidate = ledger.propose(
+        title="Historical repair",
+        repository_path=tmp_path,
+        patch_sha256="f" * 64,
+        failure_type=FailureType.MEMORY,
+        metadata={"autofix_run_id": run.run_id},
+    )
+    ledger.record_autofix_attempt(
+        run.run_id,
+        AutoFixAttemptFeedback(
+            attempt_number=1,
+            phase=AutoFixPhase.COMPLETE,
+            provider="historical",
+            accepted=True,
+            candidate_id=candidate.candidate_id,
+        ),
+    )
+    ledger.finish_autofix_run(run.run_id, AutoFixRunStatus.SUCCEEDED)
+    assert ledger.get_autofix_run(run.run_id).failure_type is None
+
+    reopened = RepairLedger(database)
+
+    assert reopened.get_autofix_run(run.run_id).failure_type == FailureType.MEMORY
+
+
 def test_ledger_migrates_pre_selection_autofix_schema(tmp_path: Path) -> None:
     database = tmp_path / "legacy.db"
     with sqlite3.connect(database) as connection:
@@ -606,4 +702,6 @@ def test_ledger_migrates_pre_selection_autofix_schema(tmp_path: Path) -> None:
     with sqlite3.connect(database) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(autofix_runs)")}
     assert "generator_selection" in columns
+    assert "failure_type" in columns
     assert run.generator_selection is None
+    assert run.failure_type is None
