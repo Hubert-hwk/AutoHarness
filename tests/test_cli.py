@@ -100,3 +100,47 @@ def test_repair_patch_cli_promotes_candidate(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert '"applied": true' in result.output
     assert (tmp_path / "value.txt").read_text(encoding="utf-8") == "2\n"
+
+
+def test_evolve_patch_cli_records_and_learns(tmp_path: Path) -> None:
+    patch, plan = _verification_files(tmp_path)
+    experience = tmp_path / "experience.json"
+    experience.write_text(
+        json.dumps(
+            {
+                "title": "Improve score",
+                "failure_type": "reasoning_failure",
+                "trigger_terms": ["low score"],
+                "root_cause": "Value was too low",
+                "repair_steps": ["Increase value"],
+                "validation_steps": ["Run benchmark"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ledger = tmp_path / "state" / "ledger.db"
+    skills = tmp_path / "state" / "skills"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "evolve-patch",
+            str(patch),
+            str(plan),
+            str(experience),
+            "--repo",
+            str(tmp_path),
+            "--ledger",
+            str(ledger),
+            "--skills",
+            str(skills),
+            "--allow-command-execution",
+            "--apply-to-source",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert '"status": "learned"' in result.output
+    history = CliRunner().invoke(app, ["repair-history", "--ledger", str(ledger)])
+    assert history.exit_code == 0
+    assert '"status": "learned"' in history.output

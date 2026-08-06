@@ -9,8 +9,10 @@ from typing import Annotated
 import typer
 
 from autoharness.code_graph import PythonCodeGraph
+from autoharness.ledger import LedgerError, RepairLedger
 from autoharness.models import (
     AgentTrace,
+    CandidateStatus,
     EvaluationRequest,
     PatchVerificationPlan,
     RepairExperience,
@@ -150,6 +152,78 @@ def repair_patch(
     typer.echo(result.model_dump_json(indent=2))
     if not result.verification.accepted:
         raise typer.Exit(code=2)
+
+
+@app.command("evolve-patch")
+def evolve_patch(
+    patch_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    plan_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    experience_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    repo: Annotated[
+        Path, typer.Option("--repo", exists=True, file_okay=False, readable=True)
+    ] = Path("."),
+    ledger: Annotated[Path | None, typer.Option("--ledger")] = None,
+    skills: Annotated[Path | None, typer.Option("--skills")] = None,
+    allow_command_execution: Annotated[bool, typer.Option("--allow-command-execution")] = False,
+    apply_to_source: Annotated[bool, typer.Option("--apply-to-source")] = False,
+) -> None:
+    """Verify, promote, record, and learn a reusable skill from one repair."""
+    if not allow_command_execution:
+        typer.echo(
+            "Refusing to execute benchmark commands without --allow-command-execution",
+            err=True,
+        )
+        raise typer.Exit(code=4)
+    if not apply_to_source:
+        typer.echo("Refusing to modify the source without --apply-to-source", err=True)
+        raise typer.Exit(code=5)
+    source = repo.expanduser().resolve()
+    ledger_path = ledger or source / ".autoharness" / "ledger.db"
+    skill_directory = skills or source / ".autoharness" / "skills"
+    try:
+        patch = patch_file.read_text(encoding="utf-8")
+        plan = PatchVerificationPlan.model_validate(_load_json(plan_file))
+        experience = RepairExperience.model_validate(_load_json(experience_file))
+        result = AutoHarness().evolve_patch(
+            source,
+            patch,
+            plan,
+            experience,
+            ledger_path=ledger_path,
+            skill_directory=skill_directory,
+            promote=True,
+        )
+    except (LedgerError, OSError, VerificationError) as exc:
+        typer.echo(f"Evolution failed: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    typer.echo(result.model_dump_json(indent=2))
+    if result.candidate.status == CandidateStatus.REJECTED:
+        raise typer.Exit(code=2)
+
+
+@app.command("repair-history")
+def repair_history(
+    ledger: Annotated[Path, typer.Option("--ledger", exists=True, dir_okay=False)],
+    status: Annotated[CandidateStatus | None, typer.Option("--status")] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=500)] = 50,
+) -> None:
+    """List persisted repair candidates, newest first."""
+    records = RepairLedger(ledger).list_candidates(status=status, limit=limit)
+    typer.echo(json.dumps([item.model_dump(mode="json") for item in records], indent=2))
+
+
+@app.command("repair-events")
+def repair_events(
+    candidate_id: Annotated[str, typer.Argument()],
+    ledger: Annotated[Path, typer.Option("--ledger", exists=True, dir_okay=False)],
+) -> None:
+    """Show the append-only lifecycle events for one repair candidate."""
+    try:
+        events = RepairLedger(ledger).events(candidate_id)
+    except LedgerError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=3) from exc
+    typer.echo(json.dumps([item.model_dump(mode="json") for item in events], indent=2))
 
 
 @app.command()

@@ -35,6 +35,21 @@ class SkillGenerator:
         path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
         return path
 
+    def save_versioned(self, skill: Skill, directory: str | Path) -> tuple[Skill, Path]:
+        """Preserve skill history by allocating the next immutable version."""
+        output_dir = Path(directory).expanduser().resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        versions: list[int] = []
+        for path in output_dir.glob(f"{skill.name}.v*.yaml"):
+            match = re.fullmatch(rf"{re.escape(skill.name)}\.v(\d+)\.yaml", path.name)
+            if match:
+                versions.append(int(match.group(1)))
+        versioned = skill.model_copy(update={"version": max(versions, default=0) + 1})
+        path = output_dir / f"{skill.name}.v{versioned.version}.yaml"
+        data: dict[str, Any] = versioned.model_dump(mode="json")
+        path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        return versioned, path
+
     @staticmethod
     def _slug(value: str) -> str:
         slug = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")

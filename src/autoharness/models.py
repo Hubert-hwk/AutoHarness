@@ -46,6 +46,15 @@ class MetricDirection(StrEnum):
     LOWER_IS_BETTER = "lower_is_better"
 
 
+class CandidateStatus(StrEnum):
+    PROPOSED = "proposed"
+    VERIFIED = "verified"
+    REJECTED = "rejected"
+    PROMOTED = "promoted"
+    LEARNED = "learned"
+    FAILED = "failed"
+
+
 class TraceEvent(BaseModel):
     """One structured observation from an agent execution."""
 
@@ -307,3 +316,31 @@ class Skill(BaseModel):
     workflow: list[str]
     evaluation: list[str]
     version: int = 1
+
+
+class RepairCandidateRecord(BaseModel):
+    candidate_id: str
+    title: str
+    repository_path: str
+    patch_sha256: str
+    failure_type: FailureType
+    status: CandidateStatus
+    changed_paths: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class RepairCandidateEvent(BaseModel):
+    sequence: int
+    candidate_id: str
+    status: CandidateStatus
+    details: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class EvolutionPipelineResult(BaseModel):
+    candidate: RepairCandidateRecord
+    repair: RepairPipelineResult
+    skill: Skill | None = None
+    skill_path: str | None = None

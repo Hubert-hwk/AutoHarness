@@ -7,12 +7,15 @@ from pathlib import Path
 from autoharness.code_graph import PythonCodeGraph
 from autoharness.diagnosis import FailureDiagnoser
 from autoharness.evaluation import EvaluationGate
+from autoharness.evolution import EvolutionPipeline
+from autoharness.ledger import RepairLedger
 from autoharness.models import (
     AgentTrace,
     AnalysisResult,
     EvaluationPolicy,
     EvaluationResult,
     EvaluationSnapshot,
+    EvolutionPipelineResult,
     PatchVerificationPlan,
     PatchVerificationResult,
     RepairExperience,
@@ -80,3 +83,17 @@ class AutoHarness:
         promote: bool = False,
     ) -> RepairPipelineResult:
         return self.repair_pipeline.run(repository, patch, plan, promote=promote)
+
+    def evolve_patch(
+        self,
+        repository: str | Path,
+        patch: str,
+        plan: PatchVerificationPlan,
+        experience: RepairExperience,
+        *,
+        ledger_path: str | Path,
+        skill_directory: str | Path,
+        promote: bool = True,
+    ) -> EvolutionPipelineResult:
+        pipeline = EvolutionPipeline(RepairLedger(ledger_path), skill_directory)
+        return pipeline.run(repository, patch, plan, experience, promote=promote)

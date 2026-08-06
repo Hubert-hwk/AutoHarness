@@ -2,6 +2,14 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.3.0 - 2026-08-07
+
+- Add a SQLite Repair Ledger with an enforced candidate state machine and event history.
+- Add the end-to-end Evolution Pipeline: propose, verify/reject, promote, and learn.
+- Enrich learned Skills with baseline, candidate, and delta benchmark metrics.
+- Preserve immutable Skill versions instead of overwriting earlier repair knowledge.
+- Add `evolve-patch`, `repair-history`, and `repair-events` CLI workflows.
+
 ## 0.2.0 - 2026-08-07
 
 - Add before/after evaluation snapshots and configurable metric policies.

@@ -6,8 +6,8 @@ AutoHarness is an open-source reliability layer for AI agents. It turns runtime 
 logs, and user feedback into explainable failure diagnoses, relevant code locations, and
 reusable repair knowledge.
 
-This repository contains the Phase 1 MVP: an **Agent Debug Copilot** that works locally
-and does not require an LLM or external service.
+The current release contains a deterministic Agent Debug Copilot and an auditable repair
+pipeline that work locally without requiring an LLM or external service.
 
 ## What works today
 
@@ -21,6 +21,7 @@ and does not require an LLM or external service.
 - Before/after evaluation gates with test requirements, hard thresholds, and per-metric
   regression budgets.
 - Non-destructive patch verification in separate disposable baseline and candidate copies.
+- Guarded source promotion, persistent repair history, and versioned skill evolution.
 - CLI and FastAPI interfaces backed by the same application service.
 
 ```text
@@ -33,7 +34,10 @@ Trace / logs / feedback
   Python code graph -----> candidate files and symbols
           |
           v
-  validated repair ------> reusable skill
+  verified repair -------> guarded promotion
+          |                        |
+          v                        v
+  repair ledger <--------- versioned skill
 ```
 
 ## Quick start
@@ -123,6 +127,27 @@ applying the patch. Rejected candidates, replaced patch content, or source chang
 verification are never promoted. Original files are copied to
 `PATH/.autoharness/backups/` before mutation so an applied repair remains recoverable.
 
+Run the full self-evolution loop:
+
+```bash
+autoharness evolve-patch PATCH PLAN EXPERIENCE \
+  --repo PATH \
+  --allow-command-execution \
+  --apply-to-source
+```
+
+The evolution pipeline records every candidate and state transition in
+`PATH/.autoharness/ledger.db`. A successful repair moves through
+`proposed -> verified -> promoted -> learned`; rejected and failed attempts are retained for
+analysis. The generated versioned Skill includes baseline, candidate, and delta metrics.
+
+Inspect the history or the event stream for one candidate:
+
+```bash
+autoharness repair-history --ledger PATH/.autoharness/ledger.db
+autoharness repair-events CANDIDATE_ID --ledger PATH/.autoharness/ledger.db
+```
+
 See [`examples/repair_experience.json`](examples/repair_experience.json) for the expected
 repair format.
 
@@ -152,8 +177,10 @@ To include code localization, wrap the trace in an analysis request:
 - `evaluation.py` enforces tests, metric thresholds, and regression budgets.
 - `verification.py` validates patches and runs isolated before/after benchmarks.
 - `RepairPipeline` promotes accepted candidates with stale-source detection and backups.
+- `ledger.py` persists the repair state machine and append-only lifecycle events in SQLite.
+- `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
 - `skills.py` converts validated repairs into portable YAML skills.
-- `service.py` orchestrates the Observe → Diagnose → Localize → Learn workflow.
+- `service.py` orchestrates the Observe -> Diagnose -> Repair -> Evaluate -> Learn workflow.
 - `api.py` and `cli.py` are transport adapters.
 
 The deterministic core is intentional: it provides a measurable baseline before adding an
@@ -182,12 +209,11 @@ uv run pytest
 
 ## Roadmap
 
-- **Phase 1 — Agent Debug Copilot:** trace ingestion, diagnosis, and code localization.
-- **Phase 2 — AutoFix Agent:** evaluation gates and non-destructive patch verification are
-  available, including guarded promotion; patch generation and richer benchmark adapters
-  are next.
-- **Phase 3 — Self-Evolving Harness:** harness optimization, experience memory, and skill
-  selection/evolution.
+- **Phase 1 - Agent Debug Copilot:** trace ingestion, diagnosis, and code localization.
+- **Phase 2 - AutoFix Agent:** evaluation, verification, guarded promotion, and repair
+  history are available; patch generation and richer benchmark adapters are next.
+- **Phase 3 - Self-Evolving Harness:** versioned repair Skills are available; automatic
+  skill retrieval, harness optimization, and experience selection are next.
 
 ## License
 
