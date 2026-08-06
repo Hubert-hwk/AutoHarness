@@ -7,6 +7,9 @@ from autoharness.models import (
     AutoFixAttemptResult,
     AutoFixPhase,
     AutoFixPipelineResult,
+    AutoFixRunAttemptRecord,
+    AutoFixRunRecord,
+    AutoFixRunStatus,
     EvaluationResult,
     EvolutionPipelineResult,
     FailureDiagnosis,
@@ -26,6 +29,9 @@ __all__ = [
     "AutoFixAttemptResult",
     "AutoFixPhase",
     "AutoFixPipelineResult",
+    "AutoFixRunAttemptRecord",
+    "AutoFixRunRecord",
+    "AutoFixRunStatus",
     "EvaluationResult",
     "EvolutionPipelineResult",
     "FailureDiagnosis",
@@ -35,4 +41,4 @@ __all__ = [
     "SkillRecommendationResult",
     "SkillOutcomeStats",
 ]
-__version__ = "0.7.0"
+__version__ = "0.8.0"

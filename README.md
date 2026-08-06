@@ -30,6 +30,8 @@ pipeline that work locally without requiring an LLM or external service.
   optional promotion, and learning.
 - Feedback-driven AutoFix retries with structured failures, evaluation metrics, rejection
   reasons, and duplicate-patch suppression.
+- Persistent AutoFix run and attempt records covering generation errors through final outcomes,
+  with privacy-safe Trace hashing by default.
 - CLI and FastAPI interfaces backed by the same application service.
 
 ```text
@@ -199,6 +201,8 @@ unified diff against the baseline. The safe default does not modify the source c
 It makes up to three attempts by default. Every later attempt receives the prior generation,
 verification, or evaluation outcomes through `previous_attempts`; use `--max-attempts 1..10`
 to control the retry budget. Identical patches are not benchmarked twice.
+Each invocation creates a durable `run_id` before diagnosis or generation begins, so successful,
+rejected, and failed runs remain queryable even when no valid patch was produced.
 Add `--apply-to-source` to promote an accepted patch and learn a versioned Skill:
 
 ```bash
@@ -226,6 +230,19 @@ the phase, candidate status, patch digest, before/after metrics, rejection reaso
 bounded errors. AutoHarness stores this provenance with the next candidate in the Repair
 Ledger. Once source promotion succeeds it will never retry, even if later Skill persistence
 fails, preventing a second repair from running against already-mutated source.
+
+By default the run record stores only a canonical SHA-256 of the input Trace. Use
+`--persist-trace` only when full Trace retention is appropriate for the repository's privacy
+policy. Run listings never expand stored Trace content; a single-run lookup does:
+
+```bash
+autoharness autofix-runs --ledger PATH/.autoharness/ledger.db
+autoharness autofix-run RUN_ID --ledger PATH/.autoharness/ledger.db
+```
+
+Attempt rows are immutable and include their phase, provider, patch digest, candidate link,
+metrics, rejection reasons, and bounded error. Candidate metadata also carries its `run_id`,
+providing navigation in both directions.
 
 Generator commands are trusted local processes, not an operating-system sandbox. AutoHarness
 protects the generator program from modifying itself, rejects malformed, binary, oversized,
@@ -267,8 +284,8 @@ To include code localization, wrap the trace in an analysis request:
 - `autofix.py` orchestrates feedback-driven Diagnose -> Retrieve -> Generate -> Verify ->
   Promote -> Learn attempts.
 - `RepairPipeline` promotes accepted candidates with stale-source detection and backups.
-- `ledger.py` persists the repair state machine, append-only lifecycle events, and Skill outcome
-  associations in SQLite.
+- `ledger.py` persists AutoFix runs and immutable attempts, the repair state machine, append-only
+  lifecycle events, and Skill outcome associations in SQLite.
 - `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
 - `skills.py` converts validated repairs into portable YAML skills.
 - `registry.py` safely indexes and ranks the latest learned Skill versions with conservative,
@@ -278,7 +295,7 @@ To include code localization, wrap the trace in an analysis request:
 
 The deterministic core is intentional: it provides a measurable baseline while keeping
 generation providers replaceable. Future phases will add model-backed provider adapters,
-persistent trace storage, and feedback-driven harness optimization.
+interrupted-run recovery, and feedback-driven harness optimization.
 
 ## Development
 
@@ -304,8 +321,8 @@ uv run pytest
 
 - **Phase 1 - Agent Debug Copilot:** trace ingestion, diagnosis, and code localization.
 - **Phase 2 - AutoFix Agent:** evaluation, verification, guarded promotion, and repair
-  history plus pluggable isolated patch generation and feedback-driven retries are available;
-  model-backed providers and richer benchmark adapters are next.
+  history plus pluggable isolated patch generation, feedback-driven retries, and persistent run
+  auditing are available; model-backed providers and richer benchmark adapters are next.
 - **Phase 3 - Self-Evolving Harness:** versioned repair Skills and explainable retrieval are
   available with outcome-aware selection; causal credit assignment, controlled exploration,
   and harness optimization are next.

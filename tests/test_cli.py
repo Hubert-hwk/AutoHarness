@@ -231,10 +231,28 @@ def test_autofix_cli_runs_full_pipeline(tmp_path: Path) -> None:
     assert '"provider": "cli-generator"' in result.output
     assert '"status": "learned"' in result.output
     payload = json.loads(result.output)
+    assert payload["run"]["status"] == "succeeded"
+    assert payload["run"]["trace"] is None
     assert len(payload["attempts"]) == 2
     assert payload["attempts"][0]["feedback"]["phase"] == "evaluation"
     assert payload["attempts"][1]["feedback"]["phase"] == "complete"
     assert (tmp_path / "value.txt").read_text(encoding="utf-8") == "2\n"
+    ledger = tmp_path / ".autoharness" / "ledger.db"
+    runs = CliRunner().invoke(app, ["autofix-runs", "--ledger", str(ledger)])
+    detail = CliRunner().invoke(
+        app,
+        ["autofix-run", payload["run"]["run_id"], "--ledger", str(ledger)],
+    )
+    assert runs.exit_code == 0
+    assert json.loads(runs.output)[0]["status"] == "succeeded"
+    assert detail.exit_code == 0
+    assert len(json.loads(detail.output)["attempts"]) == 2
+    missing = CliRunner().invoke(
+        app,
+        ["autofix-run", "missing", "--ledger", str(ledger)],
+    )
+    assert missing.exit_code == 3
+    assert "Unknown AutoFix run" in missing.output
 
 
 def test_skill_outcomes_cli_and_outcome_aware_recommendation(tmp_path: Path) -> None:

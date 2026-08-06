@@ -1,9 +1,17 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from autoharness.ledger import LedgerError, RepairLedger
-from autoharness.models import CandidateStatus, FailureType
+from autoharness.models import (
+    AgentTrace,
+    AutoFixAttemptFeedback,
+    AutoFixPhase,
+    AutoFixRunStatus,
+    CandidateStatus,
+    FailureType,
+)
 
 
 def _candidate(ledger: RepairLedger, repository: Path):
@@ -142,3 +150,120 @@ def test_ledger_shrinks_skill_outcome_scores_toward_neutral(tmp_path: Path) -> N
     assert outcomes[("poor", 1)].posterior_success_rate == pytest.approx(0.1429)
     assert outcomes[("good", 1)].score_adjustment == pytest.approx(0.952)
     assert outcomes[("poor", 1)].score_adjustment == pytest.approx(-0.952)
+
+
+def test_ledger_persists_autofix_run_without_trace_by_default(tmp_path: Path) -> None:
+    database = tmp_path / "ledger.db"
+    ledger = RepairLedger(database)
+    trace = AgentTrace(task="Sensitive task", events=[], feedback="private feedback")
+    run = ledger.start_autofix_run(
+        repository_path=tmp_path,
+        trace=trace,
+        generator_provider="test-generator",
+        max_attempts=3,
+        promote_requested=False,
+    )
+    candidate = _candidate(ledger, tmp_path)
+    candidate = ledger.transition(candidate.candidate_id, CandidateStatus.VERIFIED)
+    feedback = AutoFixAttemptFeedback(
+        attempt_number=1,
+        phase=AutoFixPhase.COMPLETE,
+        provider="test-generator",
+        accepted=True,
+        patch_sha256=candidate.patch_sha256,
+        candidate_id=candidate.candidate_id,
+        status=candidate.status,
+    )
+
+    attempt = ledger.record_autofix_attempt(run.run_id, feedback)
+    completed = ledger.finish_autofix_run(
+        run.run_id,
+        AutoFixRunStatus.SUCCEEDED,
+        final_candidate_id=candidate.candidate_id,
+    )
+    restored = RepairLedger(database).get_autofix_run(run.run_id)
+
+    assert run.trace is None
+    assert not run.trace_persisted
+    assert len(run.trace_sha256) == 64
+    assert attempt.feedback == feedback
+    assert completed.status == AutoFixRunStatus.SUCCEEDED
+    assert restored.final_candidate_id == candidate.candidate_id
+    assert restored.trace is None
+    assert RepairLedger(database).autofix_attempts(run.run_id)[0].feedback == feedback
+    with sqlite3.connect(database) as connection:
+        stored_trace = connection.execute(
+            "SELECT trace_json FROM autofix_runs WHERE run_id = ?", (run.run_id,)
+        ).fetchone()[0]
+    assert stored_trace is None
+
+
+def test_ledger_optionally_persists_trace_and_failed_run(tmp_path: Path) -> None:
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    trace = AgentTrace(task="Persist this trace", events=[])
+    run = ledger.start_autofix_run(
+        repository_path=tmp_path,
+        trace=trace,
+        generator_provider="test-generator",
+        max_attempts=1,
+        promote_requested=True,
+        persist_trace=True,
+    )
+    feedback = AutoFixAttemptFeedback(
+        attempt_number=1,
+        phase=AutoFixPhase.GENERATION,
+        provider="test-generator",
+        error_type="RuntimeError",
+        error="generation failed",
+    )
+    ledger.record_autofix_attempt(run.run_id, feedback)
+
+    completed = ledger.finish_autofix_run(
+        run.run_id,
+        AutoFixRunStatus.FAILED,
+        error=RuntimeError("x" * 5000),
+    )
+
+    assert completed.trace == trace
+    assert completed.trace_persisted
+    assert completed.error_type == "RuntimeError"
+    assert completed.error is not None and len(completed.error) == 4000
+    listed = ledger.list_autofix_runs(status=AutoFixRunStatus.FAILED)
+    assert listed[0].run_id == completed.run_id
+    assert listed[0].trace is None
+    assert listed[0].trace_persisted
+
+
+def test_ledger_enforces_immutable_autofix_attempts_and_terminal_runs(tmp_path: Path) -> None:
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    run = ledger.start_autofix_run(
+        repository_path=tmp_path,
+        trace=AgentTrace(task="Test invariants", events=[]),
+        generator_provider="test-generator",
+        max_attempts=1,
+        promote_requested=False,
+    )
+    feedback = AutoFixAttemptFeedback(
+        attempt_number=1,
+        phase=AutoFixPhase.GENERATION,
+        provider="test-generator",
+    )
+    ledger.record_autofix_attempt(run.run_id, feedback)
+
+    with pytest.raises(LedgerError, match="already exists"):
+        ledger.record_autofix_attempt(run.run_id, feedback)
+
+    with pytest.raises(LedgerError, match="exceeds run budget 1"):
+        ledger.record_autofix_attempt(
+            run.run_id,
+            feedback.model_copy(update={"attempt_number": 2}),
+        )
+
+    ledger.finish_autofix_run(run.run_id, AutoFixRunStatus.FAILED)
+    with pytest.raises(LedgerError, match="already terminal"):
+        ledger.record_autofix_attempt(
+            run.run_id,
+            feedback.model_copy(update={"attempt_number": 2}),
+        )
+    with pytest.raises(LedgerError, match="already terminal"):
+        ledger.finish_autofix_run(run.run_id, AutoFixRunStatus.FAILED)

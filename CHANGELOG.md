@@ -2,6 +2,16 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.8.0 - 2026-08-07
+
+- Add persistent AutoFix run records with running, succeeded, rejected, and failed states.
+- Persist immutable attempt records for generation errors, duplicate patches, verification,
+  evaluation, promotion, and learning outcomes.
+- Link runs, attempts, and repair candidates in both result models and SQLite metadata.
+- Store only a canonical Trace SHA-256 by default, with explicit opt-in full Trace persistence.
+- Redact full Trace content from run listings while retaining it in explicit single-run queries.
+- Add `autofix-runs` and `autofix-run` audit commands plus privacy and lifecycle tests.
+
 ## 0.7.0 - 2026-08-07
 
 - Aggregate repository-scoped outcomes for every retrieved Skill version from the Repair Ledger.

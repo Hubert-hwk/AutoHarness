@@ -140,6 +140,7 @@ class AutoHarness:
         promote: bool = False,
         skill_limit: int = 5,
         max_attempts: int = 3,
+        persist_trace: bool = False,
     ) -> AutoFixPipelineResult:
         pipeline = AutoFixPipeline(
             generator,
@@ -153,4 +154,5 @@ class AutoHarness:
             promote=promote,
             skill_limit=skill_limit,
             max_attempts=max_attempts,
+            persist_trace=persist_trace,
         )

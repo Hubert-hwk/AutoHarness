@@ -13,6 +13,7 @@ from autoharness.generation import CommandPatchGenerator, PatchGenerationError
 from autoharness.ledger import LedgerError, RepairLedger
 from autoharness.models import (
     AgentTrace,
+    AutoFixRunStatus,
     CandidateStatus,
     EvaluationRequest,
     PatchGeneratorConfig,
@@ -282,6 +283,41 @@ def skill_outcomes(
     typer.echo(json.dumps([item.model_dump(mode="json") for item in ordered], indent=2))
 
 
+@app.command("autofix-runs")
+def autofix_runs(
+    ledger: Annotated[Path, typer.Option("--ledger", exists=True, dir_okay=False)],
+    status: Annotated[AutoFixRunStatus | None, typer.Option("--status")] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=500)] = 50,
+) -> None:
+    """List persisted AutoFix runs, newest first."""
+    runs = RepairLedger(ledger).list_autofix_runs(status=status, limit=limit)
+    typer.echo(json.dumps([item.model_dump(mode="json") for item in runs], indent=2))
+
+
+@app.command("autofix-run")
+def autofix_run(
+    run_id: Annotated[str, typer.Argument()],
+    ledger: Annotated[Path, typer.Option("--ledger", exists=True, dir_okay=False)],
+) -> None:
+    """Show one AutoFix run and its immutable attempt records."""
+    history = RepairLedger(ledger)
+    try:
+        run = history.get_autofix_run(run_id)
+        attempts = history.autofix_attempts(run_id)
+    except LedgerError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=3) from exc
+    typer.echo(
+        json.dumps(
+            {
+                "run": run.model_dump(mode="json"),
+                "attempts": [item.model_dump(mode="json") for item in attempts],
+            },
+            indent=2,
+        )
+    )
+
+
 @app.command("autofix")
 def autofix(
     trace_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
@@ -296,6 +332,13 @@ def autofix(
     max_attempts: Annotated[int, typer.Option("--max-attempts", min=1, max=10)] = 3,
     allow_command_execution: Annotated[bool, typer.Option("--allow-command-execution")] = False,
     apply_to_source: Annotated[bool, typer.Option("--apply-to-source")] = False,
+    persist_trace: Annotated[
+        bool,
+        typer.Option(
+            "--persist-trace",
+            help="Store the full trace in the ledger; the default stores only its SHA-256.",
+        ),
+    ] = False,
 ) -> None:
     """Diagnose, retrieve experience, generate, verify, and optionally learn a repair."""
     if not allow_command_execution:
@@ -322,6 +365,7 @@ def autofix(
             promote=apply_to_source,
             skill_limit=skill_limit,
             max_attempts=max_attempts,
+            persist_trace=persist_trace,
         )
     except (LedgerError, OSError, PatchGenerationError, VerificationError) as exc:
         typer.echo(f"Autofix failed: {exc}", err=True)

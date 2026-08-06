@@ -13,6 +13,8 @@ from autoharness.models import (
     AutoFixAttemptResult,
     AutoFixPhase,
     AutoFixPipelineResult,
+    AutoFixRunRecord,
+    AutoFixRunStatus,
     CandidateStatus,
     EvolutionPipelineResult,
     GeneratedPatch,
@@ -47,10 +49,62 @@ class AutoFixPipeline:
         promote: bool = False,
         skill_limit: int = 5,
         max_attempts: int = 3,
+        persist_trace: bool = False,
     ) -> AutoFixPipelineResult:
         if not 1 <= max_attempts <= 10:
             raise ValueError("max_attempts must be between 1 and 10")
         source = Path(repository).expanduser().resolve()
+        run = self.ledger.start_autofix_run(
+            repository_path=source,
+            trace=trace,
+            generator_provider=self._provider_name(),
+            max_attempts=max_attempts,
+            promote_requested=promote,
+            persist_trace=persist_trace,
+        )
+        try:
+            result = self._execute(
+                run,
+                trace,
+                source,
+                verification_plan,
+                promote=promote,
+                skill_limit=skill_limit,
+                max_attempts=max_attempts,
+            )
+            status = (
+                AutoFixRunStatus.REJECTED
+                if result.evolution.candidate.status == CandidateStatus.REJECTED
+                else AutoFixRunStatus.SUCCEEDED
+            )
+            completed = self.ledger.finish_autofix_run(
+                run.run_id,
+                status,
+                final_candidate_id=result.evolution.candidate.candidate_id,
+            )
+            return result.model_copy(update={"run": completed})
+        except Exception as exc:
+            current = self.ledger.get_autofix_run(run.run_id)
+            if current.status == AutoFixRunStatus.RUNNING:
+                self.ledger.finish_autofix_run(
+                    run.run_id,
+                    AutoFixRunStatus.FAILED,
+                    final_candidate_id=self._latest_candidate_id(run.run_id),
+                    error=exc,
+                )
+            raise
+
+    def _execute(
+        self,
+        run: AutoFixRunRecord,
+        trace: AgentTrace,
+        source: Path,
+        verification_plan: PatchVerificationPlan,
+        *,
+        promote: bool,
+        skill_limit: int,
+        max_attempts: int,
+    ) -> AutoFixPipelineResult:
         recommendation = self.recommender.recommend(
             trace,
             self.skill_directory,
@@ -97,6 +151,7 @@ class AutoFixPipeline:
                     error=self._bounded_error(exc),
                 )
                 feedback_history.append(feedback)
+                self.ledger.record_autofix_attempt(run.run_id, feedback)
                 attempts.append(
                     AutoFixAttemptResult(
                         attempt_number=attempt_number,
@@ -120,6 +175,7 @@ class AutoFixPipeline:
                     error=f"Patch duplicates attempt {duplicate_of}",
                 )
                 feedback_history.append(feedback)
+                self.ledger.record_autofix_attempt(run.run_id, feedback)
                 attempts.append(
                     AutoFixAttemptResult(
                         attempt_number=attempt_number,
@@ -131,7 +187,7 @@ class AutoFixPipeline:
                     if last_error is not None and last_error_attempt > last_returnable_attempt:
                         raise last_error
                     if last_returnable is not None:
-                        return self._result(recommendation, last_returnable, attempts)
+                        return self._result(run, recommendation, last_returnable, attempts)
                     raise PatchGenerationError("Patch generator only returned duplicate patches")
                 continue
             seen_patches[generated.patch_sha256] = attempt_number
@@ -144,6 +200,7 @@ class AutoFixPipeline:
                 experience,
                 promote=promote,
                 metadata=self._attempt_metadata(
+                    run.run_id,
                     attempt_number,
                     max_attempts,
                     generated,
@@ -153,6 +210,7 @@ class AutoFixPipeline:
             )
             feedback = self._feedback(attempt_number, generated, execution.result)
             feedback_history.append(feedback)
+            self.ledger.record_autofix_attempt(run.run_id, feedback)
             attempts.append(
                 AutoFixAttemptResult(
                     attempt_number=attempt_number,
@@ -177,25 +235,33 @@ class AutoFixPipeline:
             last_returnable = (generated, execution.result)
             last_returnable_attempt = attempt_number
             if execution.result.candidate.status != CandidateStatus.REJECTED:
-                return self._result(recommendation, last_returnable, attempts)
+                return self._result(run, recommendation, last_returnable, attempts)
             if attempt_number == max_attempts:
-                return self._result(recommendation, last_returnable, attempts)
+                return self._result(run, recommendation, last_returnable, attempts)
 
         raise RuntimeError("AutoFix attempt loop ended without an outcome")
 
     @staticmethod
     def _result(
+        run: AutoFixRunRecord,
         recommendation: SkillRecommendationResult,
         final: tuple[GeneratedPatch, EvolutionPipelineResult],
         attempts: list[AutoFixAttemptResult],
     ) -> AutoFixPipelineResult:
         generated, evolution = final
         return AutoFixPipelineResult(
+            run=run,
             recommendation=recommendation,
             generated_patch=generated,
             evolution=evolution,
             attempts=attempts,
         )
+
+    def _latest_candidate_id(self, run_id: str) -> str | None:
+        for attempt in reversed(self.ledger.autofix_attempts(run_id)):
+            if attempt.feedback.candidate_id is not None:
+                return attempt.feedback.candidate_id
+        return None
 
     @staticmethod
     def _feedback(
@@ -251,6 +317,7 @@ class AutoFixPipeline:
 
     @staticmethod
     def _attempt_metadata(
+        run_id: str,
         attempt_number: int,
         max_attempts: int,
         generated: GeneratedPatch,
@@ -258,6 +325,7 @@ class AutoFixPipeline:
         previous_attempts: list[AutoFixAttemptFeedback],
     ) -> dict[str, object]:
         return {
+            "autofix_run_id": run_id,
             "autofix_attempt": attempt_number,
             "autofix_max_attempts": max_attempts,
             "generator_provider": generated.provider,

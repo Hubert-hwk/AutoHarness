@@ -9,6 +9,7 @@ from autoharness.ledger import RepairLedger
 from autoharness.models import (
     AgentTrace,
     AutoFixPhase,
+    AutoFixRunStatus,
     BenchmarkCommand,
     CandidateStatus,
     EvaluationPolicy,
@@ -168,6 +169,11 @@ def test_autofix_retrieves_generates_promotes_and_learns(tmp_path: Path) -> None
     assert result.generated_patch.provider == "test-command-generator"
     assert result.evolution.candidate.status == CandidateStatus.LEARNED
     assert result.evolution.skill is not None
+    assert result.run.status == AutoFixRunStatus.SUCCEEDED
+    assert result.run.final_candidate_id == result.evolution.candidate.candidate_id
+    assert result.evolution.candidate.metadata["autofix_run_id"] == result.run.run_id
+    assert result.run.trace is None
+    assert len(ledger.autofix_attempts(result.run.run_id)) == 1
     assert (repository / "value.txt").read_text(encoding="utf-8") == "2\n"
     assert len(ledger.events(result.evolution.candidate.candidate_id)) == 4
 
@@ -214,14 +220,17 @@ def test_autofix_orders_skill_context_using_repository_outcomes(tmp_path: Path) 
 def test_autofix_safe_default_verifies_without_promoting(tmp_path: Path) -> None:
     repository = _repository(tmp_path / "repository")
     ledger = RepairLedger(tmp_path / "ledger.db")
+    trace = _trace()
 
     result = AutoFixPipeline(_generator(), ledger, tmp_path / "missing-skills").run(
-        _trace(), repository, _plan(), promote=False
+        trace, repository, _plan(), promote=False, persist_trace=True
     )
 
     assert result.recommendation.skills.indexed_skills == 0
     assert result.evolution.candidate.status == CandidateStatus.VERIFIED
     assert result.evolution.skill is None
+    assert result.run.status == AutoFixRunStatus.SUCCEEDED
+    assert result.run.trace == trace
     assert (repository / "value.txt").read_text(encoding="utf-8") == "1\n"
 
 
@@ -240,6 +249,8 @@ def test_autofix_records_rejected_generated_patch(tmp_path: Path) -> None:
         AutoFixPhase.DEDUPLICATION,
     ]
     assert len(ledger.list_candidates()) == 1
+    assert result.run.status == AutoFixRunStatus.REJECTED
+    assert len(ledger.autofix_attempts(result.run.run_id)) == 3
     assert (repository / "value.txt").read_text(encoding="utf-8") == "1\n"
 
 
@@ -275,6 +286,11 @@ def test_autofix_retries_generation_failure_with_structured_feedback(tmp_path: P
     assert result.attempts[0].feedback.phase == AutoFixPhase.GENERATION
     assert result.attempts[0].feedback.error_type == "PatchGenerationError"
     assert result.attempts[1].feedback.phase == AutoFixPhase.COMPLETE
+    assert result.run.status == AutoFixRunStatus.SUCCEEDED
+    assert [attempt.feedback.phase for attempt in ledger.autofix_attempts(result.run.run_id)] == [
+        AutoFixPhase.GENERATION,
+        AutoFixPhase.COMPLETE,
+    ]
     assert result.evolution.candidate.metadata["autofix_attempt"] == 2
     assert result.evolution.candidate.metadata["previous_attempts"][0]["phase"] == (
         AutoFixPhase.GENERATION
@@ -321,6 +337,11 @@ def test_autofix_never_retries_after_source_was_promoted(
     assert len(records) == 1
     assert records[0].status == CandidateStatus.FAILED
     assert records[0].metadata["failed_from_status"] == CandidateStatus.PROMOTED
+    run = ledger.list_autofix_runs()[0]
+    assert run.status == AutoFixRunStatus.FAILED
+    assert run.final_candidate_id == records[0].candidate_id
+    assert run.error_type == "OSError"
+    assert len(ledger.autofix_attempts(run.run_id)) == 1
     assert (repository / "value.txt").read_text(encoding="utf-8") == "2\n"
 
 
@@ -344,3 +365,8 @@ def test_autofix_protects_generator_program_from_its_output(tmp_path: Path) -> N
         )
 
     assert ledger.list_candidates()[0].status == CandidateStatus.FAILED
+    run = ledger.list_autofix_runs()[0]
+    assert run.status == AutoFixRunStatus.FAILED
+    assert run.error_type == "VerificationError"
+    assert run.trace is None
+    assert len(ledger.autofix_attempts(run.run_id)) == 3

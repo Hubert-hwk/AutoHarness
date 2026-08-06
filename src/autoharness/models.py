@@ -65,6 +65,13 @@ class AutoFixPhase(StrEnum):
     COMPLETE = "complete"
 
 
+class AutoFixRunStatus(StrEnum):
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    REJECTED = "rejected"
+    FAILED = "failed"
+
+
 class TraceEvent(BaseModel):
     """One structured observation from an agent execution."""
 
@@ -468,7 +475,32 @@ class AutoFixAttemptResult(BaseModel):
     feedback: AutoFixAttemptFeedback
 
 
+class AutoFixRunRecord(BaseModel):
+    run_id: str
+    repository_path: str
+    trace_sha256: str = Field(min_length=64, max_length=64)
+    trace: AgentTrace | None = None
+    trace_persisted: bool = False
+    generator_provider: str
+    max_attempts: int = Field(ge=1, le=10)
+    promote_requested: bool
+    status: AutoFixRunStatus
+    final_candidate_id: str | None = None
+    error_type: str | None = None
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AutoFixRunAttemptRecord(BaseModel):
+    run_id: str
+    attempt_number: int = Field(ge=1, le=10)
+    feedback: AutoFixAttemptFeedback
+    created_at: datetime
+
+
 class AutoFixPipelineResult(BaseModel):
+    run: AutoFixRunRecord
     recommendation: SkillRecommendationResult
     generated_patch: GeneratedPatch
     evolution: EvolutionPipelineResult

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Iterator
@@ -12,6 +13,11 @@ from typing import Any
 from uuid import uuid4
 
 from autoharness.models import (
+    AgentTrace,
+    AutoFixAttemptFeedback,
+    AutoFixRunAttemptRecord,
+    AutoFixRunRecord,
+    AutoFixRunStatus,
     CandidateStatus,
     FailureType,
     RepairCandidateEvent,
@@ -185,6 +191,198 @@ class RepairLedger:
             for row in rows
         ]
 
+    def start_autofix_run(
+        self,
+        *,
+        repository_path: str | Path,
+        trace: AgentTrace,
+        generator_provider: str,
+        max_attempts: int,
+        promote_requested: bool,
+        persist_trace: bool = False,
+    ) -> AutoFixRunRecord:
+        if not 1 <= max_attempts <= 10:
+            raise LedgerError("AutoFix max_attempts must be between 1 and 10")
+        provider = generator_provider.strip()
+        if not provider:
+            raise LedgerError("AutoFix generator provider must not be blank")
+        trace_json = self._json(trace.model_dump(mode="json"))
+        trace_sha256 = hashlib.sha256(trace_json.encode("utf-8")).hexdigest()
+        run_id = uuid4().hex
+        now = self._now()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO autofix_runs (
+                    run_id, repository_path, trace_sha256, trace_json,
+                    generator_provider, max_attempts, promote_requested, status,
+                    final_candidate_id, error_type, error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+                """,
+                (
+                    run_id,
+                    str(Path(repository_path).expanduser().resolve()),
+                    trace_sha256,
+                    trace_json if persist_trace else None,
+                    provider,
+                    max_attempts,
+                    int(promote_requested),
+                    AutoFixRunStatus.RUNNING.value,
+                    now,
+                    now,
+                ),
+            )
+        return self.get_autofix_run(run_id)
+
+    def record_autofix_attempt(
+        self,
+        run_id: str,
+        feedback: AutoFixAttemptFeedback,
+    ) -> AutoFixRunAttemptRecord:
+        now = self._now()
+        try:
+            with self._connection() as connection:
+                row = connection.execute(
+                    "SELECT status, max_attempts FROM autofix_runs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+                if row is None:
+                    raise LedgerError(f"Unknown AutoFix run: {run_id}")
+                if AutoFixRunStatus(row["status"]) != AutoFixRunStatus.RUNNING:
+                    raise LedgerError(f"AutoFix run is already terminal: {run_id}")
+                if feedback.attempt_number > row["max_attempts"]:
+                    raise LedgerError(
+                        f"AutoFix attempt {feedback.attempt_number} exceeds run budget "
+                        f"{row['max_attempts']}"
+                    )
+                exists = connection.execute(
+                    """
+                    SELECT 1 FROM autofix_attempts
+                    WHERE run_id = ? AND attempt_number = ?
+                    """,
+                    (run_id, feedback.attempt_number),
+                ).fetchone()
+                if exists is not None:
+                    raise LedgerError(
+                        f"AutoFix attempt {feedback.attempt_number} already exists for run {run_id}"
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO autofix_attempts (
+                        run_id, attempt_number, phase, candidate_id,
+                        patch_sha256, feedback, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        feedback.attempt_number,
+                        feedback.phase.value,
+                        feedback.candidate_id,
+                        feedback.patch_sha256,
+                        self._json(feedback.model_dump(mode="json")),
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise LedgerError(
+                f"Cannot record AutoFix attempt {feedback.attempt_number} for run {run_id}: {exc}"
+            ) from exc
+        return next(
+            item
+            for item in self.autofix_attempts(run_id)
+            if item.attempt_number == feedback.attempt_number
+        )
+
+    def finish_autofix_run(
+        self,
+        run_id: str,
+        status: AutoFixRunStatus,
+        *,
+        final_candidate_id: str | None = None,
+        error: Exception | None = None,
+    ) -> AutoFixRunRecord:
+        if status == AutoFixRunStatus.RUNNING:
+            raise LedgerError("Cannot finish an AutoFix run with running status")
+        now = self._now()
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT status FROM autofix_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise LedgerError(f"Unknown AutoFix run: {run_id}")
+            if AutoFixRunStatus(row["status"]) != AutoFixRunStatus.RUNNING:
+                raise LedgerError(f"AutoFix run is already terminal: {run_id}")
+            connection.execute(
+                """
+                UPDATE autofix_runs
+                SET status = ?, final_candidate_id = ?, error_type = ?, error = ?, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (
+                    status.value,
+                    final_candidate_id,
+                    type(error).__name__ if error is not None else None,
+                    self._error_text(error) if error is not None else None,
+                    now,
+                    run_id,
+                ),
+            )
+        return self.get_autofix_run(run_id)
+
+    def get_autofix_run(self, run_id: str) -> AutoFixRunRecord:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM autofix_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            raise LedgerError(f"Unknown AutoFix run: {run_id}")
+        return self._row_to_autofix_run(row)
+
+    def list_autofix_runs(
+        self,
+        *,
+        status: AutoFixRunStatus | None = None,
+        limit: int = 50,
+    ) -> list[AutoFixRunRecord]:
+        bounded_limit = max(1, min(limit, 500))
+        with self._connection() as connection:
+            if status is None:
+                rows = connection.execute(
+                    "SELECT * FROM autofix_runs ORDER BY created_at DESC LIMIT ?",
+                    (bounded_limit,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM autofix_runs
+                    WHERE status = ? ORDER BY created_at DESC LIMIT ?
+                    """,
+                    (status.value, bounded_limit),
+                ).fetchall()
+        return [self._row_to_autofix_run(row).model_copy(update={"trace": None}) for row in rows]
+
+    def autofix_attempts(self, run_id: str) -> list[AutoFixRunAttemptRecord]:
+        self.get_autofix_run(run_id)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT run_id, attempt_number, feedback, created_at
+                FROM autofix_attempts WHERE run_id = ? ORDER BY attempt_number
+                """,
+                (run_id,),
+            ).fetchall()
+        return [
+            AutoFixRunAttemptRecord(
+                run_id=row["run_id"],
+                attempt_number=row["attempt_number"],
+                feedback=AutoFixAttemptFeedback.model_validate(self._load_json(row["feedback"])),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
     def skill_outcomes(
         self,
         *,
@@ -326,6 +524,34 @@ class RepairLedger:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (candidate_id) REFERENCES repair_candidates(candidate_id)
                 );
+                CREATE TABLE IF NOT EXISTS autofix_runs (
+                    run_id TEXT PRIMARY KEY,
+                    repository_path TEXT NOT NULL,
+                    trace_sha256 TEXT NOT NULL,
+                    trace_json TEXT,
+                    generator_provider TEXT NOT NULL,
+                    max_attempts INTEGER NOT NULL,
+                    promote_requested INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    final_candidate_id TEXT,
+                    error_type TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (final_candidate_id) REFERENCES repair_candidates(candidate_id)
+                );
+                CREATE TABLE IF NOT EXISTS autofix_attempts (
+                    run_id TEXT NOT NULL,
+                    attempt_number INTEGER NOT NULL,
+                    phase TEXT NOT NULL,
+                    candidate_id TEXT,
+                    patch_sha256 TEXT,
+                    feedback TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (run_id, attempt_number),
+                    FOREIGN KEY (run_id) REFERENCES autofix_runs(run_id) ON DELETE CASCADE,
+                    FOREIGN KEY (candidate_id) REFERENCES repair_candidates(candidate_id)
+                );
                 CREATE INDEX IF NOT EXISTS idx_candidates_status
                     ON repair_candidates(status, created_at);
                 CREATE INDEX IF NOT EXISTS idx_candidates_patch
@@ -334,6 +560,12 @@ class RepairLedger:
                     ON repair_candidates(repository_path, updated_at);
                 CREATE INDEX IF NOT EXISTS idx_events_candidate
                     ON repair_events(candidate_id, sequence);
+                CREATE INDEX IF NOT EXISTS idx_autofix_runs_status
+                    ON autofix_runs(status, created_at);
+                CREATE INDEX IF NOT EXISTS idx_autofix_runs_repository
+                    ON autofix_runs(repository_path, created_at);
+                CREATE INDEX IF NOT EXISTS idx_autofix_attempts_candidate
+                    ON autofix_attempts(candidate_id);
                 """
             )
 
@@ -379,6 +611,34 @@ class RepairLedger:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    @staticmethod
+    def _row_to_autofix_run(row: sqlite3.Row) -> AutoFixRunRecord:
+        trace_json = row["trace_json"]
+        return AutoFixRunRecord(
+            run_id=row["run_id"],
+            repository_path=row["repository_path"],
+            trace_sha256=row["trace_sha256"],
+            trace=(
+                AgentTrace.model_validate(RepairLedger._load_json(trace_json))
+                if trace_json is not None
+                else None
+            ),
+            trace_persisted=trace_json is not None,
+            generator_provider=row["generator_provider"],
+            max_attempts=row["max_attempts"],
+            promote_requested=bool(row["promote_requested"]),
+            status=AutoFixRunStatus(row["status"]),
+            final_candidate_id=row["final_candidate_id"],
+            error_type=row["error_type"],
+            error=row["error"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _error_text(error: Exception) -> str:
+        return str(error)[-4000:]
 
     @staticmethod
     def _json(value: Any) -> str:
