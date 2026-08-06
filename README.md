@@ -23,6 +23,8 @@ pipeline that work locally without requiring an LLM or external service.
 - Non-destructive patch verification in separate disposable baseline and candidate copies.
 - Guarded source promotion, persistent repair history, and versioned skill evolution.
 - Explainable retrieval over the latest learned Skill versions for future failures.
+- Outcome-aware Skill ranking that conservatively incorporates accepted, rejected, and failed
+  repair history from the current repository.
 - Pluggable patch generation through an isolated, JSON-in/unified-diff-out command protocol.
 - End-to-end AutoFix orchestration from diagnosis and Skill retrieval through verification,
   optional promotion, and learning.
@@ -159,14 +161,29 @@ Retrieve relevant repair experience for a new trace:
 ```bash
 autoharness recommend-skills TRACE.json \
   --skills PATH/.autoharness/skills \
-  --repo PATH
+  --repo PATH \
+  --ledger PATH/.autoharness/ledger.db
 ```
 
 Recommendations are ranked using failure type, trigger phrases and tokens, affected code
-components, Skill content, and version. Every match includes its score and reasons. Invalid
-YAML is reported without hiding valid Skills, and older versions are ignored while remaining
-on disk for auditability. Use `--cross-failure` to explicitly allow experience from other
-failure categories; unknown diagnoses automatically fall back to cross-category retrieval.
+components, Skill content, version, and optional observed outcomes. Outcome evidence is scoped
+to `--repo` when supplied. A Beta(2,2) prior plus sample-confidence shrinkage limits the
+adjustment to about +/-2 points, so a few correlated observations cannot overpower semantic
+relevance. Every match reports accepted, rejected, and failed counts, posterior rate, score
+adjustment, and textual reasons. This is associative evidence, not a causal claim that a
+retrieved Skill alone produced the result.
+
+Invalid YAML is reported without hiding valid Skills, and older versions remain on disk for
+auditability. Use `--cross-failure` to explicitly allow experience from other failure
+categories; unknown diagnoses automatically fall back to cross-category retrieval.
+
+Inspect the outcome evidence independently:
+
+```bash
+autoharness skill-outcomes \
+  --ledger PATH/.autoharness/ledger.db \
+  --repo PATH
+```
 
 Generate and verify a repair directly from a failing trace:
 
@@ -250,10 +267,12 @@ To include code localization, wrap the trace in an analysis request:
 - `autofix.py` orchestrates feedback-driven Diagnose -> Retrieve -> Generate -> Verify ->
   Promote -> Learn attempts.
 - `RepairPipeline` promotes accepted candidates with stale-source detection and backups.
-- `ledger.py` persists the repair state machine and append-only lifecycle events in SQLite.
+- `ledger.py` persists the repair state machine, append-only lifecycle events, and Skill outcome
+  associations in SQLite.
 - `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
 - `skills.py` converts validated repairs into portable YAML skills.
-- `registry.py` safely indexes and ranks the latest learned Skill versions.
+- `registry.py` safely indexes and ranks the latest learned Skill versions with conservative,
+  explainable outcome adjustments.
 - `service.py` orchestrates the Observe -> Diagnose -> Repair -> Evaluate -> Learn workflow.
 - `api.py` and `cli.py` are transport adapters.
 
@@ -288,7 +307,8 @@ uv run pytest
   history plus pluggable isolated patch generation and feedback-driven retries are available;
   model-backed providers and richer benchmark adapters are next.
 - **Phase 3 - Self-Evolving Harness:** versioned repair Skills and explainable retrieval are
-  available; harness optimization and outcome-aware experience selection are next.
+  available with outcome-aware selection; causal credit assignment, controlled exploration,
+  and harness optimization are next.
 
 ## License
 

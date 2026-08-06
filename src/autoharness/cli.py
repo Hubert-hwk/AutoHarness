@@ -237,6 +237,10 @@ def recommend_skills(
         Path | None,
         typer.Option("--repo", exists=True, file_okay=False, readable=True),
     ] = None,
+    ledger: Annotated[
+        Path | None,
+        typer.Option("--ledger", exists=True, dir_okay=False, readable=True),
+    ] = None,
     limit: Annotated[int, typer.Option("--limit", min=1, max=50)] = 5,
     cross_failure: Annotated[
         bool,
@@ -250,6 +254,7 @@ def recommend_skills(
             trace,
             skills,
             repository_path=repo,
+            ledger_path=ledger,
             limit=limit,
             same_failure_only=not cross_failure,
         )
@@ -257,6 +262,24 @@ def recommend_skills(
         typer.echo(f"Skill recommendation failed: {exc}", err=True)
         raise typer.Exit(code=3) from exc
     typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("skill-outcomes")
+def skill_outcomes(
+    ledger: Annotated[Path, typer.Option("--ledger", exists=True, dir_okay=False)],
+    repo: Annotated[
+        Path | None,
+        typer.Option("--repo", exists=True, file_okay=False, readable=True),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=50_000)] = 5000,
+) -> None:
+    """Show outcome evidence associated with retrieved Skill versions."""
+    outcomes = RepairLedger(ledger).skill_outcomes(repository_path=repo, limit=limit)
+    ordered = sorted(
+        outcomes.values(),
+        key=lambda item: (-item.observations, item.skill_name, -item.skill_version),
+    )
+    typer.echo(json.dumps([item.model_dump(mode="json") for item in ordered], indent=2))
 
 
 @app.command("autofix")

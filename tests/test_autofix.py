@@ -104,6 +104,22 @@ def _seed_skill(directory: Path) -> None:
     )
 
 
+def _record_skill_outcome(
+    ledger: RepairLedger,
+    repository: Path,
+    skill_name: str,
+    status: CandidateStatus,
+) -> None:
+    candidate = ledger.propose(
+        title="Historical outcome",
+        repository_path=repository,
+        patch_sha256=skill_name[0] * 64,
+        failure_type=FailureType.REASONING,
+        metadata={"retrieved_skills": [{"name": skill_name, "version": 1, "score": 10.0}]},
+    )
+    ledger.transition(candidate.candidate_id, status)
+
+
 def _adaptive_repository(path: Path, mode: str) -> Path:
     repository = _repository(path)
     (repository / "generator.py").write_text(
@@ -154,6 +170,45 @@ def test_autofix_retrieves_generates_promotes_and_learns(tmp_path: Path) -> None
     assert result.evolution.skill is not None
     assert (repository / "value.txt").read_text(encoding="utf-8") == "2\n"
     assert len(ledger.events(result.evolution.candidate.candidate_id)) == 4
+
+
+def test_autofix_orders_skill_context_using_repository_outcomes(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "repository")
+    skills = repository / ".autoharness" / "skills"
+    for name in ("a_poor_repair", "z_reliable_repair"):
+        SkillGenerator().save_versioned(
+            Skill(
+                name=name,
+                description="Repair a low score",
+                failure_type=FailureType.REASONING,
+                triggers=["low score", "incorrect response"],
+                context={"root_cause": "low value", "affected_components": ["value"]},
+                workflow=["Increase value"],
+                evaluation=["Run score benchmark"],
+            ),
+            skills,
+        )
+    ledger = RepairLedger(repository / ".autoharness" / "ledger.db")
+    for _ in range(8):
+        _record_skill_outcome(ledger, repository, "a_poor_repair", CandidateStatus.REJECTED)
+        _record_skill_outcome(ledger, repository, "z_reliable_repair", CandidateStatus.VERIFIED)
+    (repository / "generator.py").write_text(
+        "import json, sys\n"
+        "context = json.load(sys.stdin)\n"
+        "assert context['skill_matches'][0]['skill']['name'] == 'z_reliable_repair'\n"
+        "sys.stdout.write('--- a/value.txt\\n+++ b/value.txt\\n@@ -1 +1 @@\\n-1\\n+2\\n')\n",
+        encoding="utf-8",
+    )
+
+    result = AutoFixPipeline(_generator(), ledger, skills).run(
+        _trace(), repository, _plan(), max_attempts=1
+    )
+
+    best = result.recommendation.skills.matches[0]
+    assert best.skill.name == "z_reliable_repair"
+    assert best.outcome_stats is not None
+    assert best.outcome_stats.accepted == 8
+    assert any("observed outcomes" in reason for reason in best.reasons)
 
 
 def test_autofix_safe_default_verifies_without_promoting(tmp_path: Path) -> None:

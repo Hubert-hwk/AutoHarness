@@ -84,6 +84,7 @@ class EvolutionPipeline:
             repair = self.repair_pipeline.run(source, patch, plan, promote=promote)
             verification = repair.verification
             verification_details: dict[str, Any] = {
+                "evaluation_accepted": verification.accepted,
                 "evaluation_summary": verification.evaluation.summary,
                 "metrics_before": verification.baseline.snapshot.metrics,
                 "metrics_after": verification.candidate.snapshot.metrics,

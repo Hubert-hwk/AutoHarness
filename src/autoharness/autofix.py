@@ -57,6 +57,7 @@ class AutoFixPipeline:
             repository_path=source,
             limit=skill_limit,
             allow_missing_directory=True,
+            outcome_stats=self.ledger.skill_outcomes(repository_path=source),
         )
         protected_paths = list(
             dict.fromkeys(

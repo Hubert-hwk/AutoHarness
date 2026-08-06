@@ -16,6 +16,7 @@ from autoharness.models import (
     FailureType,
     RepairCandidateEvent,
     RepairCandidateRecord,
+    SkillOutcomeStats,
 )
 
 
@@ -184,6 +185,123 @@ class RepairLedger:
             for row in rows
         ]
 
+    def skill_outcomes(
+        self,
+        *,
+        repository_path: str | Path | None = None,
+        limit: int = 5000,
+    ) -> dict[tuple[str, int], SkillOutcomeStats]:
+        """Aggregate observed repair outcomes for retrieved Skill versions.
+
+        Attribution is intentionally associative rather than causal: every Skill supplied to
+        a candidate receives the candidate outcome. Bayesian shrinkage in the registry keeps
+        this weak evidence from overpowering diagnosis and content relevance.
+        """
+        bounded_limit = max(1, min(limit, 50_000))
+        with self._connection() as connection:
+            if repository_path is None:
+                rows = connection.execute(
+                    """
+                    SELECT status, metadata FROM repair_candidates
+                    ORDER BY updated_at DESC LIMIT ?
+                    """,
+                    (bounded_limit,),
+                ).fetchall()
+            else:
+                resolved = str(Path(repository_path).expanduser().resolve())
+                rows = connection.execute(
+                    """
+                    SELECT status, metadata FROM repair_candidates
+                    WHERE repository_path = ? ORDER BY updated_at DESC LIMIT ?
+                    """,
+                    (resolved, bounded_limit),
+                ).fetchall()
+
+        aggregates: dict[tuple[str, int], dict[str, int]] = {}
+        for row in rows:
+            status = CandidateStatus(row["status"])
+            if status == CandidateStatus.PROPOSED:
+                continue
+            metadata = self._load_json(row["metadata"])
+            retrieved = metadata.get("retrieved_skills", [])
+            if not isinstance(retrieved, list):
+                continue
+            outcome = self._outcome_category(status, metadata)
+            seen: set[tuple[str, int]] = set()
+            for item in retrieved:
+                key = self._skill_key(item)
+                if key is None or key in seen:
+                    continue
+                seen.add(key)
+                counts = aggregates.setdefault(
+                    key,
+                    {
+                        "accepted": 0,
+                        "rejected": 0,
+                        "unevaluated_failures": 0,
+                        "post_acceptance_failures": 0,
+                    },
+                )
+                counts[outcome] += 1
+                if status == CandidateStatus.FAILED and outcome == "accepted":
+                    counts["post_acceptance_failures"] += 1
+
+        results: dict[tuple[str, int], SkillOutcomeStats] = {}
+        for (name, version), counts in aggregates.items():
+            observations = counts["accepted"] + counts["rejected"] + counts["unevaluated_failures"]
+            posterior = (counts["accepted"] + 2) / (observations + 4)
+            confidence = observations / (observations + 5)
+            adjustment = (posterior - 0.5) * 4 * confidence
+            results[(name, version)] = SkillOutcomeStats(
+                skill_name=name,
+                skill_version=version,
+                observations=observations,
+                accepted=counts["accepted"],
+                rejected=counts["rejected"],
+                unevaluated_failures=counts["unevaluated_failures"],
+                post_acceptance_failures=counts["post_acceptance_failures"],
+                posterior_success_rate=round(posterior, 4),
+                confidence=round(confidence, 4),
+                score_adjustment=round(adjustment, 3),
+            )
+        return results
+
+    @staticmethod
+    def _outcome_category(status: CandidateStatus, metadata: dict[str, Any]) -> str:
+        failed_from = metadata.get("failed_from_status")
+        accepted = status in {
+            CandidateStatus.VERIFIED,
+            CandidateStatus.PROMOTED,
+            CandidateStatus.LEARNED,
+        } or (
+            status == CandidateStatus.FAILED
+            and (
+                bool(metadata.get("evaluation_accepted"))
+                or failed_from
+                in {
+                    CandidateStatus.VERIFIED.value,
+                    CandidateStatus.PROMOTED.value,
+                }
+            )
+        )
+        if accepted:
+            return "accepted"
+        if status == CandidateStatus.REJECTED:
+            return "rejected"
+        return "unevaluated_failures"
+
+    @staticmethod
+    def _skill_key(value: Any) -> tuple[str, int] | None:
+        if not isinstance(value, dict):
+            return None
+        name = value.get("name")
+        version = value.get("version")
+        if not isinstance(name, str) or not name.strip():
+            return None
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            return None
+        return name.strip(), version
+
     def _initialize(self) -> None:
         with self._connection() as connection:
             connection.executescript(
@@ -212,6 +330,8 @@ class RepairLedger:
                     ON repair_candidates(status, created_at);
                 CREATE INDEX IF NOT EXISTS idx_candidates_patch
                     ON repair_candidates(patch_sha256);
+                CREATE INDEX IF NOT EXISTS idx_candidates_repository
+                    ON repair_candidates(repository_path, updated_at);
                 CREATE INDEX IF NOT EXISTS idx_events_candidate
                     ON repair_events(candidate_id, sequence);
                 """

@@ -13,6 +13,7 @@ from autoharness.models import (
     PatchPromotionResult,
     PatchVerificationResult,
     RepairPipelineResult,
+    SkillOutcomeStats,
     SkillRecommendationResult,
 )
 from autoharness.service import AutoHarness
@@ -32,5 +33,6 @@ __all__ = [
     "PatchVerificationResult",
     "RepairPipelineResult",
     "SkillRecommendationResult",
+    "SkillOutcomeStats",
 ]
-__version__ = "0.6.0"
+__version__ = "0.7.0"

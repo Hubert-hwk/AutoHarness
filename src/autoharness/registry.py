@@ -17,6 +17,7 @@ from autoharness.models import (
     Skill,
     SkillLoadIssue,
     SkillMatch,
+    SkillOutcomeStats,
     SkillQuery,
     SkillRecommendationResult,
     SkillSearchResult,
@@ -33,8 +34,13 @@ class SkillRegistry:
     max_skill_bytes = 1024 * 1024
     max_skill_files = 5000
 
-    def __init__(self, directory: str | Path) -> None:
+    def __init__(
+        self,
+        directory: str | Path,
+        outcome_stats: dict[tuple[str, int], SkillOutcomeStats] | None = None,
+    ) -> None:
         self.directory = Path(directory).expanduser().resolve()
+        self.outcome_stats = outcome_stats or {}
 
     def search(self, query: SkillQuery) -> SkillSearchResult:
         skills, issues, ignored = self._load_latest()
@@ -151,11 +157,23 @@ class SkillRegistry:
             return None
         score += min(0.5, skill.version * 0.05)
         reasons.append(f"latest indexed version v{skill.version}")
+        outcome = self.outcome_stats.get((skill.name, skill.version))
+        if outcome is not None:
+            score = max(0.0, score + outcome.score_adjustment)
+            direction = "+" if outcome.score_adjustment >= 0 else ""
+            reasons.append(
+                "observed outcomes: "
+                f"{outcome.accepted} accepted, {outcome.rejected} rejected, "
+                f"{outcome.unevaluated_failures} unevaluated failures; "
+                f"Bayesian rate {outcome.posterior_success_rate:.3f}, "
+                f"score {direction}{outcome.score_adjustment:.3f}"
+            )
         return SkillMatch(
             skill=skill,
             path=str(path.resolve()),
             score=round(score, 3),
             reasons=reasons,
+            outcome_stats=outcome,
         )
 
     @staticmethod
@@ -211,6 +229,7 @@ class SkillRecommender:
         limit: int = 5,
         same_failure_only: bool = True,
         allow_missing_directory: bool = False,
+        outcome_stats: dict[tuple[str, int], SkillOutcomeStats] | None = None,
     ) -> SkillRecommendationResult:
         diagnosis = self.diagnoser.diagnose(trace)
         locations = []
@@ -240,7 +259,7 @@ class SkillRecommender:
         if allow_missing_directory and not directory.exists():
             search = SkillSearchResult(matches=[], indexed_skills=0)
         else:
-            search = SkillRegistry(directory).search(
+            search = SkillRegistry(directory, outcome_stats).search(
                 SkillQuery(
                     failure_type=diagnosis.failure_type,
                     text=text,

@@ -110,15 +110,22 @@ class AutoHarness:
         skill_directory: str | Path,
         *,
         repository_path: str | Path | None = None,
+        ledger_path: str | Path | None = None,
         limit: int = 5,
         same_failure_only: bool = True,
     ) -> SkillRecommendationResult:
+        outcomes = (
+            RepairLedger(ledger_path).skill_outcomes(repository_path=repository_path)
+            if ledger_path is not None
+            else None
+        )
         return self.skill_recommender.recommend(
             trace,
             skill_directory,
             repository_path=repository_path,
             limit=limit,
             same_failure_only=same_failure_only,
+            outcome_stats=outcomes,
         )
 
     def autofix(

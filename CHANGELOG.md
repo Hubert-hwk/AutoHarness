@@ -2,6 +2,15 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.7.0 - 2026-08-07
+
+- Aggregate repository-scoped outcomes for every retrieved Skill version from the Repair Ledger.
+- Distinguish accepted repairs, rejections, pre-evaluation failures, and post-acceptance failures.
+- Apply bounded Bayesian outcome adjustments without overpowering diagnosis and content relevance.
+- Include outcome statistics and score adjustments in every explainable Skill match.
+- Feed outcome-aware ordering into AutoFix automatically and expose `--ledger` retrieval support.
+- Add the `skill-outcomes` audit CLI plus ranking, aggregation, repository-scope, and CLI tests.
+
 ## 0.6.0 - 2026-08-07
 
 - Add feedback-driven AutoFix retries with a configurable one-to-ten attempt budget.

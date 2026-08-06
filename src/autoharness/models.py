@@ -371,11 +371,25 @@ class SkillLoadIssue(BaseModel):
     error: str
 
 
+class SkillOutcomeStats(BaseModel):
+    skill_name: str
+    skill_version: int = Field(ge=1)
+    observations: int = Field(ge=1)
+    accepted: int = Field(ge=0)
+    rejected: int = Field(ge=0)
+    unevaluated_failures: int = Field(ge=0)
+    post_acceptance_failures: int = Field(ge=0)
+    posterior_success_rate: float = Field(ge=0, le=1)
+    confidence: float = Field(ge=0, le=1)
+    score_adjustment: float = Field(ge=-2, le=2)
+
+
 class SkillMatch(BaseModel):
     skill: Skill
     path: str
     score: float = Field(ge=0)
     reasons: list[str]
+    outcome_stats: SkillOutcomeStats | None = None
 
 
 class SkillSearchResult(BaseModel):

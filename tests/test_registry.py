@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from autoharness.models import FailureType, Skill, SkillQuery
+from autoharness.models import FailureType, Skill, SkillOutcomeStats, SkillQuery
 from autoharness.registry import SkillRegistry, SkillRegistryError
 from autoharness.skills import SkillGenerator
 
@@ -100,3 +100,48 @@ def test_registry_rejects_oversized_skill_as_invalid(tmp_path: Path) -> None:
 
     assert result.indexed_skills == 0
     assert "1 MiB safety limit" in result.invalid_files[0].error
+
+
+def test_registry_reranks_with_explainable_outcome_evidence(tmp_path: Path) -> None:
+    generator = SkillGenerator()
+    generator.save(_skill("a_poor"), tmp_path)
+    generator.save(_skill("z_good"), tmp_path)
+    outcomes = {
+        ("a_poor", 1): SkillOutcomeStats(
+            skill_name="a_poor",
+            skill_version=1,
+            observations=10,
+            accepted=0,
+            rejected=10,
+            unevaluated_failures=0,
+            post_acceptance_failures=0,
+            posterior_success_rate=0.1429,
+            confidence=0.6667,
+            score_adjustment=-0.952,
+        ),
+        ("z_good", 1): SkillOutcomeStats(
+            skill_name="z_good",
+            skill_version=1,
+            observations=10,
+            accepted=10,
+            rejected=0,
+            unevaluated_failures=0,
+            post_acceptance_failures=0,
+            posterior_success_rate=0.8571,
+            confidence=0.6667,
+            score_adjustment=0.952,
+        ),
+    }
+
+    result = SkillRegistry(tmp_path, outcomes).search(
+        SkillQuery(
+            failure_type=FailureType.REASONING,
+            text="incorrect answer with a low score",
+            components=["value"],
+        )
+    )
+
+    assert [match.skill.name for match in result.matches] == ["z_good", "a_poor"]
+    assert result.matches[0].outcome_stats == outcomes[("z_good", 1)]
+    assert any("observed outcomes" in reason for reason in result.matches[0].reasons)
+    assert any("score +0.952" in reason for reason in result.matches[0].reasons)

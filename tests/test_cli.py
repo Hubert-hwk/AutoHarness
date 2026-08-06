@@ -5,6 +5,9 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from autoharness.cli import app
+from autoharness.ledger import RepairLedger
+from autoharness.models import CandidateStatus, FailureType, Skill
+from autoharness.skills import SkillGenerator
 
 
 def _verification_files(root: Path) -> tuple[Path, Path]:
@@ -232,3 +235,71 @@ def test_autofix_cli_runs_full_pipeline(tmp_path: Path) -> None:
     assert payload["attempts"][0]["feedback"]["phase"] == "evaluation"
     assert payload["attempts"][1]["feedback"]["phase"] == "complete"
     assert (tmp_path / "value.txt").read_text(encoding="utf-8") == "2\n"
+
+
+def test_skill_outcomes_cli_and_outcome_aware_recommendation(tmp_path: Path) -> None:
+    skills = tmp_path / "skills"
+    SkillGenerator().save(
+        Skill(
+            name="reliable_score_repair",
+            description="Repair low scores",
+            failure_type=FailureType.REASONING,
+            triggers=["low score", "incorrect answer"],
+            context={"root_cause": "low value"},
+            workflow=["Increase value"],
+            evaluation=["Run score benchmark"],
+        ),
+        skills,
+    )
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    candidate = ledger.propose(
+        title="Historical repair",
+        repository_path=tmp_path,
+        patch_sha256="a" * 64,
+        failure_type=FailureType.REASONING,
+        metadata={
+            "retrieved_skills": [{"name": "reliable_score_repair", "version": 1, "score": 9.0}]
+        },
+    )
+    ledger.transition(candidate.candidate_id, CandidateStatus.VERIFIED)
+    trace = tmp_path / "outcome-trace.json"
+    trace.write_text(
+        json.dumps(
+            {
+                "task": "Fix an incorrect answer with a low score",
+                "events": [
+                    {
+                        "kind": "response",
+                        "status": "failure",
+                        "error": "incorrect answer",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    outcomes = CliRunner().invoke(
+        app,
+        ["skill-outcomes", "--ledger", str(ledger.path), "--repo", str(tmp_path)],
+    )
+    recommendation = CliRunner().invoke(
+        app,
+        [
+            "recommend-skills",
+            str(trace),
+            "--skills",
+            str(skills),
+            "--repo",
+            str(tmp_path),
+            "--ledger",
+            str(ledger.path),
+        ],
+    )
+
+    assert outcomes.exit_code == 0
+    assert json.loads(outcomes.output)[0]["accepted"] == 1
+    assert recommendation.exit_code == 0
+    match = json.loads(recommendation.output)["skills"]["matches"][0]
+    assert match["outcome_stats"]["accepted"] == 1
+    assert any("observed outcomes" in reason for reason in match["reasons"])
