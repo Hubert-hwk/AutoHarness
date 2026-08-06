@@ -67,16 +67,11 @@ class AutoFixPipeline:
                 repository_path=source,
             )
         self._configure_generator(source)
-        generator_selection = getattr(self.generator, "selection_metadata", None)
-        if generator_selection is not None and not isinstance(
-            generator_selection, ProviderSelection
-        ):
-            generator_selection = ProviderSelection.model_validate(generator_selection)
         run = self.ledger.start_autofix_run(
             repository_path=source,
             trace=trace,
             generator_provider=self._provider_name(),
-            generator_selection=generator_selection,
+            generator_selection=self._generator_selection(),
             max_attempts=max_attempts,
             promote_requested=promote,
             persist_trace=persist_trace,
@@ -167,6 +162,7 @@ class AutoFixPipeline:
             try:
                 generated = self.generator.generate(source, context)
             except PatchGenerationError as exc:
+                self._sync_generator_selection(run.run_id)
                 feedback = AutoFixAttemptFeedback(
                     attempt_number=attempt_number,
                     phase=AutoFixPhase.GENERATION,
@@ -188,6 +184,7 @@ class AutoFixPipeline:
                     raise
                 continue
 
+            self._sync_generator_selection(run.run_id)
             self.ledger.heartbeat_autofix_run(run.run_id)
 
             duplicate_of = seen_patches.get(generated.patch_sha256)
@@ -339,6 +336,21 @@ class AutoFixPipeline:
         configure = getattr(self.generator, "configure_outcomes", None)
         if callable(configure):
             configure(self.ledger.provider_outcomes(repository_path=repository))
+
+    def _generator_selection(self) -> ProviderSelection | None:
+        selection = getattr(self.generator, "selection_metadata", None)
+        if selection is None or isinstance(selection, ProviderSelection):
+            return selection
+        return ProviderSelection.model_validate(selection)
+
+    def _sync_generator_selection(self, run_id: str) -> None:
+        selection = self._generator_selection()
+        if selection is not None:
+            self.ledger.update_autofix_generator_selection(
+                run_id,
+                generator_provider=self._provider_name(),
+                generator_selection=selection,
+            )
 
     @staticmethod
     def _bounded_error(error: Exception) -> str:

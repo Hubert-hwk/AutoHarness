@@ -2,6 +2,16 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.12.0 - 2026-08-07
+
+- Fail over within an AutoFix run when an adaptive provider cannot generate progress.
+- Try the highest-scored untried provider before reusing the best available alternative.
+- Keep evaluation rejection with the current provider so structured feedback can repair its next attempt.
+- Persist initial and current providers plus every failover trigger, route, and reason atomically.
+- Attribute one outcome per run/provider pair from actual immutable attempt evidence.
+- Exclude pre-generation failures from provider quality evidence and keep interrupted work non-judgmental.
+- Add deterministic failover examples and unit, ledger, CLI, and end-to-end integration coverage.
+
 ## 0.11.0 - 2026-08-07
 
 - Add adaptive portfolios over command and OpenAI patch generators.

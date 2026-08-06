@@ -1,0 +1,23 @@
+{
+  "type": "adaptive",
+  "name": "example-failover-portfolio",
+  "minimum_trials": 1,
+  "exploration_weight": 0.35,
+  "failover_phases": ["generation", "deduplication"],
+  "providers": [
+    {
+      "type": "command",
+      "name": "example-unavailable-generator",
+      "argv": ["python", "unavailable_generator.py"],
+      "timeout_seconds": 30,
+      "max_patch_bytes": 65536
+    },
+    {
+      "type": "command",
+      "name": "example-command-generator",
+      "argv": ["python", "generator.py"],
+      "timeout_seconds": 30,
+      "max_patch_bytes": 65536
+    }
+  ]
+}

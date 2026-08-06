@@ -29,6 +29,8 @@ pipeline that work locally without requiring an LLM or external service.
   Responses API provider.
 - Explainable adaptive generator portfolios that learn from repository-scoped run outcomes,
   sample every provider, and retain controlled exploration.
+- In-run provider failover that preserves retry feedback while routing generation outages and
+  duplicate patches to another portfolio member.
 - End-to-end AutoFix orchestration from diagnosis and Skill retrieval through verification,
   optional promotion, and learning.
 - Feedback-driven AutoFix retries with structured failures, evaluation metrics, rejection
@@ -285,6 +287,7 @@ Combine two or more providers in an adaptive portfolio:
   "name": "repair-portfolio",
   "minimum_trials": 2,
   "exploration_weight": 0.35,
+  "failover_phases": ["generation", "deduplication"],
   "providers": [
     {
       "type": "command",
@@ -306,11 +309,22 @@ tie-breaker. It then ranks providers with a Beta(2,2) posterior success rate plu
 exploration bonus. Setting `exploration_weight` to zero keeps minimum sampling but makes later
 selection pure exploitation. The evidence is scoped to the current repository and is associative:
 a successful run does not prove that its generator alone caused the result. Failed infrastructure
-and generation runs count as failures; interrupted runs are reported but excluded from quality
-observations because no terminal judgment was reached.
+and generation attempts count as failures only for providers that were actually invoked;
+interrupted runs are reported but excluded from quality observations because no terminal judgment
+was reached.
 
-Each AutoFix run stores the selected provider, every candidate's posterior, exploration bonus and
-score, and a human-readable decision reason. Inspect the aggregates independently:
+Within one AutoFix run, the default `failover_phases` routes generation errors and duplicate
+patches to the highest-scored provider not yet tried in that run. After every provider has been
+tried, it reuses the best alternative rather than immediately repeating the latest failure. Add
+`"verification"` to fail over after unsafe or invalid patch verification, or set the list to `[]`
+to disable in-run failover. Evaluation rejection is intentionally not a valid failover phase: the
+same provider receives the benchmark metrics and rejection reasons on its next attempt so it can
+correct the patch. Promotion and learning failures can occur after source mutation or acceptance
+and are never routed to another generator.
+
+Each AutoFix run stores the initial and current provider, every candidate's posterior, exploration
+bonus and score, and every failover trigger, route, and human-readable reason. Inspect the
+aggregates independently:
 
 ```bash
 autoharness provider-outcomes \
@@ -319,12 +333,17 @@ autoharness provider-outcomes \
 ```
 
 Aggregation reads the newest 5,000 terminal runs by default; use `--limit` to choose a different
-bounded history window. Existing ledgers are migrated in place when the selection-audit column is
-first needed. If any portfolio child is a network provider, `--allow-network-generation` is
-required even when the provider selected for a particular run is local. Every command program in
-the portfolio is protected from generated patches, not only the currently selected program. See
-[`adaptive_portfolio.json`](examples/verification_target/adaptive_portfolio.json) for a local,
-deterministic example.
+bounded history window. Evidence is classified once per run/provider pair from immutable attempt
+records: any accepted attempt is a success, an evaluated rejection without later success is a
+rejection, and other terminal attempted work is a failure. Runs that fail before invoking a
+generator are excluded instead of blaming the configured provider. Existing ledgers and v0.11
+selection JSON remain readable. If any portfolio child is a network provider,
+`--allow-network-generation` is required even when the provider selected for a particular run is
+local. Every command program in the portfolio is protected from generated patches, not only the
+currently selected program. See
+[`adaptive_portfolio.json`](examples/verification_target/adaptive_portfolio.json) for cross-run
+exploration and [`failover_portfolio.json`](examples/verification_target/failover_portfolio.json)
+for deterministic in-run recovery.
 
 The generation context includes `attempt_number`, the effective verification contract, and
 structured `previous_attempts` entries with phase, candidate status, patch digest, before/after
@@ -402,13 +421,14 @@ To include code localization, wrap the trace in an analysis request:
 - `evaluation.py` enforces tests, metric thresholds, and regression budgets.
 - `verification.py` validates patches and runs isolated before/after benchmarks.
 - `generation.py` defines the provider protocol, isolated command generator, bounded repository
-  context builder, OpenAI Responses adapter, and explainable adaptive portfolio selector.
+  context builder, OpenAI Responses adapter, and explainable adaptive portfolio selector with
+  deterministic in-run failover.
 - `autofix.py` orchestrates feedback-driven Diagnose -> Retrieve -> Generate -> Verify ->
   Promote -> Learn attempts.
 - `RepairPipeline` promotes accepted candidates with stale-source detection and backups.
 - `ledger.py` persists heartbeat-backed AutoFix runs, immutable attempts, atomic interruption
-  recovery, provider selection evidence, repository-scoped outcomes, the repair state machine,
-  append-only lifecycle events, and Skill outcome associations in SQLite.
+  recovery, provider selection and failover evidence, attempt-aware repository-scoped outcomes,
+  the repair state machine, append-only lifecycle events, and Skill outcome associations in SQLite.
 - `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
 - `skills.py` converts validated repairs into portable YAML skills.
 - `registry.py` safely indexes and ranks the latest learned Skill versions with conservative,
@@ -449,7 +469,8 @@ uv run pytest
   consumes verification and retry feedback; richer benchmark adapters are next.
 - **Phase 3 - Self-Evolving Harness:** versioned repair Skills and explainable retrieval are
   available with outcome-aware selection. Adaptive provider portfolios now perform controlled,
-  auditable exploration; causal credit assignment and harness optimization are next.
+  auditable exploration and attempt-aware failover attribution; causal credit assignment and
+  harness optimization are next.
 
 ## License
 

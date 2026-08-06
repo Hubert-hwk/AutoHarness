@@ -19,6 +19,7 @@ from autoharness.models import (
     OpenAIPatchGeneratorConfig,
     PatchGenerationContext,
     PatchGeneratorConfig,
+    ProviderFailoverEvent,
     ProviderOutcomeStats,
     ProviderSelection,
     ProviderSelectionCandidate,
@@ -589,6 +590,7 @@ class AdaptivePatchGenerator:
             minimum_trials=self.config.minimum_trials,
             exploration_weight=self.config.exploration_weight,
             selected_provider=candidates[selected].provider,
+            initial_selected_provider=candidates[selected].provider,
             exploration=exploration,
             reason=reason,
             candidates=candidates,
@@ -599,6 +601,7 @@ class AdaptivePatchGenerator:
         repository: str | Path,
         context: PatchGenerationContext,
     ) -> GeneratedPatch:
+        self._apply_failover(context)
         return self.generators[self._selected_index].generate(repository, context)
 
     def protected_paths(self, repository: str | Path) -> list[str]:
@@ -628,4 +631,58 @@ class AdaptivePatchGenerator:
                 confidence=0,
                 average_attempts=0,
             ),
+        )
+
+    def _apply_failover(self, context: PatchGenerationContext) -> None:
+        if not context.previous_attempts or not self.config.failover_phases:
+            return
+        trigger = context.previous_attempts[-1]
+        current_provider = self.provider_name
+        if (
+            trigger.phase not in self.config.failover_phases
+            or trigger.provider != current_provider
+            or any(
+                item.trigger_attempt == trigger.attempt_number for item in self._selection.failovers
+            )
+        ):
+            return
+
+        attempted = {item.provider for item in context.previous_attempts}
+        untried = [
+            index
+            for index, candidate in enumerate(self._selection.candidates)
+            if candidate.provider not in attempted
+        ]
+        alternatives = untried or [
+            index
+            for index, candidate in enumerate(self._selection.candidates)
+            if candidate.provider != current_provider
+        ]
+        if not alternatives:
+            return
+        selected = max(
+            alternatives,
+            key=lambda index: (self._selection.candidates[index].selection_score, -index),
+        )
+        target = self._selection.candidates[selected].provider
+        reason = (
+            f"Failed over after attempt {trigger.attempt_number} ended in "
+            f"{trigger.phase.value}; selected "
+            f"{'an untried provider' if untried else 'the best alternative provider'}"
+        )
+        event = ProviderFailoverEvent(
+            trigger_attempt=trigger.attempt_number,
+            trigger_phase=trigger.phase,
+            from_provider=current_provider,
+            to_provider=target,
+            reason=reason,
+        )
+        self._selected_index = selected
+        self._selection = self._selection.model_copy(
+            update={
+                "selected_provider": target,
+                "exploration": True,
+                "reason": reason,
+                "failovers": [*self._selection.failovers, event],
+            }
         )

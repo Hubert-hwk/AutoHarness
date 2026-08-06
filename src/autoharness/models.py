@@ -496,6 +496,10 @@ class AdaptivePatchGeneratorConfig(BaseModel):
     providers: list[dict[str, Any]] = Field(min_length=2, max_length=10)
     minimum_trials: int = Field(default=2, ge=1, le=20)
     exploration_weight: float = Field(default=0.35, ge=0, le=2)
+    failover_phases: list[AutoFixPhase] = Field(
+        default_factory=lambda: [AutoFixPhase.GENERATION, AutoFixPhase.DEDUPLICATION],
+        max_length=3,
+    )
 
     @field_validator("name")
     @classmethod
@@ -503,6 +507,21 @@ class AdaptivePatchGeneratorConfig(BaseModel):
         if not value.strip():
             raise ValueError("Adaptive generator name must not be blank")
         return value.strip()
+
+    @field_validator("failover_phases")
+    @classmethod
+    def failover_phases_must_be_safe(cls, value: list[AutoFixPhase]) -> list[AutoFixPhase]:
+        allowed = {
+            AutoFixPhase.GENERATION,
+            AutoFixPhase.DEDUPLICATION,
+            AutoFixPhase.VERIFICATION,
+        }
+        if any(item not in allowed for item in value):
+            raise ValueError(
+                "Adaptive failover phases may only include generation, deduplication, "
+                "or verification"
+            )
+        return list(dict.fromkeys(value))
 
 
 class ProviderOutcomeStats(BaseModel):
@@ -527,15 +546,25 @@ class ProviderSelectionCandidate(BaseModel):
     under_sampled: bool = False
 
 
+class ProviderFailoverEvent(BaseModel):
+    trigger_attempt: int = Field(ge=1, le=10)
+    trigger_phase: AutoFixPhase
+    from_provider: str
+    to_provider: str
+    reason: str
+
+
 class ProviderSelection(BaseModel):
     strategy: str = "bayesian_ucb"
     portfolio: str = "adaptive"
     minimum_trials: int = Field(default=1, ge=1)
     exploration_weight: float = Field(default=0, ge=0)
     selected_provider: str
+    initial_selected_provider: str | None = None
     exploration: bool
     reason: str
     candidates: list[ProviderSelectionCandidate]
+    failovers: list[ProviderFailoverEvent] = Field(default_factory=list)
 
 
 class AutoFixAttemptFeedback(BaseModel):

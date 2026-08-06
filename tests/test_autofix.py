@@ -450,6 +450,65 @@ def test_autofix_adaptive_portfolio_explores_unobserved_provider_on_next_run(
     assert outcomes["second-provider"].succeeded == 1
 
 
+def test_autofix_adaptive_portfolio_fails_over_and_attributes_each_provider(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "repository")
+    (repository / "unavailable.py").write_text(
+        "import sys\nprint('temporary outage', file=sys.stderr)\nraise SystemExit(2)\n",
+        encoding="utf-8",
+    )
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    unavailable = CommandPatchGenerator(
+        PatchGeneratorConfig(
+            name="unavailable-provider",
+            argv=[sys.executable, "unavailable.py"],
+        )
+    )
+    working = CommandPatchGenerator(
+        PatchGeneratorConfig(
+            name="working-provider",
+            argv=[sys.executable, "generator.py"],
+        )
+    )
+    adaptive = AdaptivePatchGenerator(
+        AdaptivePatchGeneratorConfig(
+            providers=[
+                {
+                    "name": "unavailable-provider",
+                    "argv": [sys.executable, "unavailable.py"],
+                },
+                {
+                    "name": "working-provider",
+                    "argv": [sys.executable, "generator.py"],
+                },
+            ],
+            minimum_trials=1,
+        ),
+        [unavailable, working],
+    )
+
+    result = AutoFixPipeline(adaptive, ledger, tmp_path / "skills").run(
+        _trace(),
+        repository,
+        _plan(),
+        max_attempts=2,
+    )
+
+    assert result.run.status == AutoFixRunStatus.SUCCEEDED
+    assert result.run.generator_provider == "working-provider"
+    assert result.run.generator_selection is not None
+    assert result.run.generator_selection.initial_selected_provider == "unavailable-provider"
+    assert result.run.generator_selection.selected_provider == "working-provider"
+    assert len(result.run.generator_selection.failovers) == 1
+    assert result.attempts[0].feedback.phase == AutoFixPhase.GENERATION
+    assert result.attempts[0].feedback.provider == "unavailable-provider"
+    assert result.attempts[1].feedback.provider == "working-provider"
+    outcomes = ledger.provider_outcomes(repository_path=repository)
+    assert outcomes["unavailable-provider"].failed == 1
+    assert outcomes["working-provider"].succeeded == 1
+
+
 def test_autofix_never_retries_after_source_was_promoted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

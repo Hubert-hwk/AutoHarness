@@ -9,6 +9,8 @@ from autoharness.cli import app
 from autoharness.ledger import RepairLedger
 from autoharness.models import (
     AgentTrace,
+    AutoFixAttemptFeedback,
+    AutoFixPhase,
     AutoFixRunStatus,
     CandidateStatus,
     FailureType,
@@ -409,6 +411,15 @@ def test_provider_outcomes_cli_reports_repository_evidence(tmp_path: Path) -> No
         generator_provider="local-provider",
         max_attempts=1,
         promote_requested=False,
+    )
+    ledger.record_autofix_attempt(
+        run.run_id,
+        AutoFixAttemptFeedback(
+            attempt_number=1,
+            phase=AutoFixPhase.COMPLETE,
+            provider="local-provider",
+            accepted=True,
+        ),
     )
     ledger.finish_autofix_run(run.run_id, AutoFixRunStatus.SUCCEEDED)
 

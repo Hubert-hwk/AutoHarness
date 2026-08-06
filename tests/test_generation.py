@@ -21,6 +21,8 @@ from autoharness.generation import (
 from autoharness.models import (
     AdaptivePatchGeneratorConfig,
     AgentTrace,
+    AutoFixAttemptFeedback,
+    AutoFixPhase,
     OpenAIPatchGeneratorConfig,
     PatchGenerationContext,
     PatchGeneratorConfig,
@@ -510,3 +512,109 @@ def test_adaptive_config_factory_detects_network_and_rejects_invalid_portfolios(
     )
     with pytest.raises(ValueError, match="provider names must be unique"):
         create_patch_generator(duplicate)
+
+    with pytest.raises(ValueError, match="failover phases"):
+        AdaptivePatchGeneratorConfig(
+            providers=payload["providers"],
+            failover_phases=[AutoFixPhase.EVALUATION],
+        )
+
+
+def test_adaptive_generator_fails_over_to_untried_provider_after_generation_error(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "value.txt").write_text("1\n", encoding="utf-8")
+    (tmp_path / "failing.py").write_text(
+        "import sys\nprint('provider unavailable', file=sys.stderr)\nraise SystemExit(2)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "working.py").write_text(
+        "from pathlib import Path\n"
+        "current = Path('value.txt').read_text().strip()\n"
+        "print(f'--- a/value.txt\\n+++ b/value.txt\\n@@ -1 +1 @@\\n-{current}\\n+2')\n",
+        encoding="utf-8",
+    )
+    first = CommandPatchGenerator(
+        PatchGeneratorConfig(name="failing", argv=[sys.executable, "failing.py"])
+    )
+    second = CommandPatchGenerator(
+        PatchGeneratorConfig(name="working", argv=[sys.executable, "working.py"])
+    )
+    adaptive = AdaptivePatchGenerator(
+        AdaptivePatchGeneratorConfig(
+            providers=[
+                {"name": "failing", "argv": [sys.executable, "failing.py"]},
+                {"name": "working", "argv": [sys.executable, "working.py"]},
+            ],
+            minimum_trials=1,
+        ),
+        [first, second],
+    )
+
+    with pytest.raises(PatchGenerationError, match="provider unavailable"):
+        adaptive.generate(tmp_path, _context())
+
+    evaluation_context = _context().model_copy(
+        update={
+            "attempt_number": 2,
+            "previous_attempts": [
+                AutoFixAttemptFeedback(
+                    attempt_number=1,
+                    phase=AutoFixPhase.EVALUATION,
+                    provider="failing",
+                    accepted=False,
+                    rejection_reasons=["score below threshold"],
+                )
+            ],
+        }
+    )
+    with pytest.raises(PatchGenerationError, match="provider unavailable"):
+        adaptive.generate(tmp_path, evaluation_context)
+    assert adaptive.provider_name == "failing"
+    assert adaptive.selection_metadata.failovers == []
+
+    retry_context = _context().model_copy(
+        update={
+            "attempt_number": 2,
+            "previous_attempts": [
+                AutoFixAttemptFeedback(
+                    attempt_number=1,
+                    phase=AutoFixPhase.GENERATION,
+                    provider="failing",
+                    error_type="PatchGenerationError",
+                    error="provider unavailable",
+                )
+            ],
+        }
+    )
+    generated = adaptive.generate(tmp_path, retry_context)
+
+    assert generated.provider == "working"
+    assert adaptive.selection_metadata.initial_selected_provider == "failing"
+    assert adaptive.selection_metadata.selected_provider == "working"
+    assert adaptive.selection_metadata.failovers[0].trigger_attempt == 1
+    assert adaptive.selection_metadata.failovers[0].trigger_phase == AutoFixPhase.GENERATION
+    assert adaptive.selection_metadata.failovers[0].from_provider == "failing"
+    assert adaptive.selection_metadata.failovers[0].to_provider == "working"
+
+    exhausted_context = _context().model_copy(
+        update={
+            "attempt_number": 3,
+            "previous_attempts": [
+                *retry_context.previous_attempts,
+                AutoFixAttemptFeedback(
+                    attempt_number=2,
+                    phase=AutoFixPhase.GENERATION,
+                    provider="working",
+                    error_type="PatchGenerationError",
+                    error="temporary failure",
+                ),
+            ],
+        }
+    )
+    with pytest.raises(PatchGenerationError, match="provider unavailable"):
+        adaptive.generate(tmp_path, exhausted_context)
+    assert adaptive.provider_name == "failing"
+    assert adaptive.selection_metadata.failovers[1].from_provider == "working"
+    assert adaptive.selection_metadata.failovers[1].to_provider == "failing"
+    assert "best alternative" in adaptive.selection_metadata.failovers[1].reason

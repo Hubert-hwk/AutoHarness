@@ -23,6 +23,7 @@ from autoharness.models import (
     PatchGeneratorConfig,
     PatchPromotionResult,
     PatchVerificationResult,
+    ProviderFailoverEvent,
     ProviderOutcomeStats,
     ProviderSelection,
     RepairPipelineResult,
@@ -53,10 +54,11 @@ __all__ = [
     "PatchGeneratorConfig",
     "PatchPromotionResult",
     "PatchVerificationResult",
+    "ProviderFailoverEvent",
     "ProviderOutcomeStats",
     "ProviderSelection",
     "RepairPipelineResult",
     "SkillRecommendationResult",
     "SkillOutcomeStats",
 ]
-__version__ = "0.11.0"
+__version__ = "0.12.0"

@@ -451,9 +451,16 @@ def test_ledger_persists_generator_selection_and_aggregates_scoped_outcomes(
                 run.run_id,
                 AutoFixAttemptFeedback(
                     attempt_number=attempt,
-                    phase=AutoFixPhase.COMPLETE,
+                    phase=(
+                        AutoFixPhase.EVALUATION
+                        if status == AutoFixRunStatus.REJECTED
+                        else AutoFixPhase.COMPLETE
+                    ),
                     provider=provider,
                     accepted=status == AutoFixRunStatus.SUCCEEDED,
+                    status=(
+                        CandidateStatus.REJECTED if status == AutoFixRunStatus.REJECTED else None
+                    ),
                 ),
             )
         ledger.finish_autofix_run(run.run_id, status)
@@ -480,6 +487,88 @@ def test_ledger_persists_generator_selection_and_aggregates_scoped_outcomes(
         run for run in ledger.list_autofix_runs() if run.generator_selection is not None
     )
     assert persisted.generator_selection == selection
+
+
+def test_provider_outcomes_attribute_failover_to_each_attempted_provider(
+    tmp_path: Path,
+) -> None:
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    selection = ProviderSelection(
+        selected_provider="unavailable",
+        initial_selected_provider="unavailable",
+        exploration=False,
+        reason="Initial choice",
+        candidates=[
+            ProviderSelectionCandidate(
+                provider=provider,
+                observations=0,
+                posterior_success_rate=0.5,
+                exploration_bonus=0,
+                selection_score=0.5,
+            )
+            for provider in ("unavailable", "working")
+        ],
+    )
+    run = ledger.start_autofix_run(
+        repository_path=tmp_path,
+        trace=AgentTrace(task="Fail over"),
+        generator_provider="unavailable",
+        generator_selection=selection,
+        max_attempts=2,
+        promote_requested=False,
+    )
+    ledger.record_autofix_attempt(
+        run.run_id,
+        AutoFixAttemptFeedback(
+            attempt_number=1,
+            phase=AutoFixPhase.GENERATION,
+            provider="unavailable",
+            error_type="PatchGenerationError",
+            error="offline",
+        ),
+    )
+    updated_selection = selection.model_copy(
+        update={"selected_provider": "working", "reason": "Failover"}
+    )
+    updated = ledger.update_autofix_generator_selection(
+        run.run_id,
+        generator_provider="working",
+        generator_selection=updated_selection,
+    )
+    ledger.record_autofix_attempt(
+        run.run_id,
+        AutoFixAttemptFeedback(
+            attempt_number=2,
+            phase=AutoFixPhase.COMPLETE,
+            provider="working",
+            accepted=True,
+        ),
+    )
+    ledger.finish_autofix_run(run.run_id, AutoFixRunStatus.SUCCEEDED)
+    with pytest.raises(LedgerError, match="already terminal"):
+        ledger.update_autofix_generator_selection(
+            run.run_id,
+            generator_provider="unavailable",
+            generator_selection=selection,
+        )
+    unattributed = ledger.start_autofix_run(
+        repository_path=tmp_path,
+        trace=AgentTrace(task="Diagnosis failed before generation"),
+        generator_provider="not-invoked",
+        max_attempts=1,
+        promote_requested=False,
+    )
+    ledger.finish_autofix_run(unattributed.run_id, AutoFixRunStatus.FAILED)
+
+    outcomes = ledger.provider_outcomes(repository_path=tmp_path)
+
+    assert updated.generator_provider == "working"
+    assert updated.generator_selection == updated_selection
+    assert outcomes["unavailable"].failed == 1
+    assert outcomes["unavailable"].average_attempts == 1
+    assert outcomes["working"].succeeded == 1
+    assert outcomes["working"].average_attempts == 1
+    assert "not-invoked" not in outcomes
 
 
 def test_ledger_migrates_pre_selection_autofix_schema(tmp_path: Path) -> None:

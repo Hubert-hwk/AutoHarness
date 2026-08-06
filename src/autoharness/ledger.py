@@ -15,6 +15,7 @@ from uuid import uuid4
 from autoharness.models import (
     AgentTrace,
     AutoFixAttemptFeedback,
+    AutoFixPhase,
     AutoFixRunAttemptRecord,
     AutoFixRunRecord,
     AutoFixRunStatus,
@@ -241,6 +242,43 @@ class RepairLedger:
                     now,
                 ),
             )
+        return self.get_autofix_run(run_id)
+
+    def update_autofix_generator_selection(
+        self,
+        run_id: str,
+        *,
+        generator_provider: str,
+        generator_selection: ProviderSelection,
+    ) -> AutoFixRunRecord:
+        """Persist an adaptive in-run provider change while the run is active."""
+        provider = generator_provider.strip()
+        if not provider:
+            raise LedgerError("AutoFix generator provider must not be blank")
+        now = self._now()
+        with self._connection() as connection:
+            updated = connection.execute(
+                """
+                UPDATE autofix_runs
+                SET generator_provider = ?, generator_selection = ?, updated_at = ?
+                WHERE run_id = ? AND status = ?
+                """,
+                (
+                    provider,
+                    self._json(generator_selection.model_dump(mode="json")),
+                    now,
+                    run_id,
+                    AutoFixRunStatus.RUNNING.value,
+                ),
+            )
+            if updated.rowcount != 1:
+                row = connection.execute(
+                    "SELECT status FROM autofix_runs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+                if row is None:
+                    raise LedgerError(f"Unknown AutoFix run: {run_id}")
+                raise LedgerError(f"AutoFix run is already terminal: {run_id}")
         return self.get_autofix_run(run_id)
 
     def heartbeat_autofix_run(self, run_id: str) -> AutoFixRunRecord:
@@ -557,29 +595,35 @@ class RepairLedger:
         repository_path: str | Path | None = None,
         limit: int = 5000,
     ) -> dict[str, ProviderOutcomeStats]:
-        """Aggregate repository-scoped provider outcomes without causal overclaiming."""
+        """Aggregate one outcome per run/provider pair from actual attempt evidence."""
         bounded_limit = max(1, min(limit, 50_000))
         query = """
-            SELECT r.generator_provider, r.status, r.updated_at,
-                   COUNT(a.attempt_number) AS attempt_count
-            FROM autofix_runs AS r
-            LEFT JOIN autofix_attempts AS a ON a.run_id = r.run_id
-            WHERE r.status != ?
-            GROUP BY r.run_id
-            ORDER BY r.updated_at DESC
-            LIMIT ?
+            SELECT recent.run_id, recent.generator_provider, recent.status, recent.updated_at,
+                   a.attempt_number, a.feedback
+            FROM (
+                SELECT run_id, generator_provider, status, updated_at
+                FROM autofix_runs
+                WHERE status != ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+            ) AS recent
+            LEFT JOIN autofix_attempts AS a ON a.run_id = recent.run_id
+            ORDER BY recent.updated_at DESC, a.attempt_number
         """
         parameters: tuple[Any, ...] = (AutoFixRunStatus.RUNNING.value, bounded_limit)
         if repository_path is not None:
             query = """
-                SELECT r.generator_provider, r.status, r.updated_at,
-                       COUNT(a.attempt_number) AS attempt_count
-                FROM autofix_runs AS r
-                LEFT JOIN autofix_attempts AS a ON a.run_id = r.run_id
-                WHERE r.status != ? AND r.repository_path = ?
-                GROUP BY r.run_id
-                ORDER BY r.updated_at DESC
-                LIMIT ?
+                SELECT recent.run_id, recent.generator_provider, recent.status,
+                       recent.updated_at, a.attempt_number, a.feedback
+                FROM (
+                    SELECT run_id, generator_provider, status, updated_at
+                    FROM autofix_runs
+                    WHERE status != ? AND repository_path = ?
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                ) AS recent
+                LEFT JOIN autofix_attempts AS a ON a.run_id = recent.run_id
+                ORDER BY recent.updated_at DESC, a.attempt_number
             """
             parameters = (
                 AutoFixRunStatus.RUNNING.value,
@@ -589,24 +633,54 @@ class RepairLedger:
         with self._connection() as connection:
             rows = connection.execute(query, parameters).fetchall()
 
-        aggregates: dict[str, dict[str, Any]] = {}
+        runs: dict[str, dict[str, Any]] = {}
         for row in rows:
-            provider = str(row["generator_provider"])
-            status = AutoFixRunStatus(row["status"])
-            counts = aggregates.setdefault(
-                provider,
+            run = runs.setdefault(
+                str(row["run_id"]),
                 {
-                    "succeeded": 0,
-                    "rejected": 0,
-                    "failed": 0,
-                    "interrupted": 0,
-                    "attempts": 0,
-                    "last_run_at": row["updated_at"],
+                    "generator_provider": str(row["generator_provider"]),
+                    "status": AutoFixRunStatus(row["status"]),
+                    "updated_at": row["updated_at"],
+                    "providers": {},
                 },
             )
-            counts[status.value] += 1
-            if status != AutoFixRunStatus.INTERRUPTED:
-                counts["attempts"] += int(row["attempt_count"])
+            if row["feedback"] is not None:
+                feedback = AutoFixAttemptFeedback.model_validate(
+                    self._load_json(str(row["feedback"]))
+                )
+                run["providers"].setdefault(feedback.provider, []).append(feedback)
+
+        aggregates: dict[str, dict[str, Any]] = {}
+        for run in runs.values():
+            status = run["status"]
+            providers: dict[str, list[AutoFixAttemptFeedback]] = run["providers"]
+            if status == AutoFixRunStatus.INTERRUPTED and not providers:
+                providers = {run["generator_provider"]: []}
+            for provider, feedback_items in providers.items():
+                counts = aggregates.setdefault(
+                    provider,
+                    {
+                        "succeeded": 0,
+                        "rejected": 0,
+                        "failed": 0,
+                        "interrupted": 0,
+                        "attempts": 0,
+                        "last_run_at": run["updated_at"],
+                    },
+                )
+                if status == AutoFixRunStatus.INTERRUPTED:
+                    counts["interrupted"] += 1
+                    continue
+                if any(item.accepted for item in feedback_items):
+                    counts["succeeded"] += 1
+                elif any(
+                    item.phase == AutoFixPhase.EVALUATION or item.status == CandidateStatus.REJECTED
+                    for item in feedback_items
+                ):
+                    counts["rejected"] += 1
+                else:
+                    counts["failed"] += 1
+                counts["attempts"] += len(feedback_items)
 
         results: dict[str, ProviderOutcomeStats] = {}
         for provider, counts in aggregates.items():
