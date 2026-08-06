@@ -12,6 +12,8 @@ from autoharness.models import (
     AutoFixRunStatus,
     CandidateStatus,
     FailureType,
+    ProviderSelection,
+    ProviderSelectionCandidate,
 )
 
 
@@ -405,3 +407,114 @@ def test_ledger_recovery_and_completion_have_exactly_one_winner(tmp_path: Path) 
         assert terminal == AutoFixRunStatus.SUCCEEDED
         assert recovered == []
         assert finished == AutoFixRunStatus.SUCCEEDED
+
+
+def test_ledger_persists_generator_selection_and_aggregates_scoped_outcomes(
+    tmp_path: Path,
+) -> None:
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    repository = tmp_path / "repository"
+    other_repository = tmp_path / "other"
+    selection = ProviderSelection(
+        selected_provider="fast",
+        exploration=False,
+        reason="Highest score",
+        candidates=[
+            ProviderSelectionCandidate(
+                provider="fast",
+                observations=2,
+                posterior_success_rate=0.5,
+                exploration_bonus=0,
+                selection_score=0.5,
+            )
+        ],
+    )
+
+    def record(
+        provider: str,
+        status: AutoFixRunStatus,
+        repo: Path,
+        attempts: int,
+        *,
+        selected: ProviderSelection | None = None,
+    ) -> None:
+        run = ledger.start_autofix_run(
+            repository_path=repo,
+            trace=AgentTrace(task=f"Run {provider} {status}"),
+            generator_provider=provider,
+            generator_selection=selected,
+            max_attempts=max(1, attempts),
+            promote_requested=False,
+        )
+        for attempt in range(1, attempts + 1):
+            ledger.record_autofix_attempt(
+                run.run_id,
+                AutoFixAttemptFeedback(
+                    attempt_number=attempt,
+                    phase=AutoFixPhase.COMPLETE,
+                    provider=provider,
+                    accepted=status == AutoFixRunStatus.SUCCEEDED,
+                ),
+            )
+        ledger.finish_autofix_run(run.run_id, status)
+
+    record("fast", AutoFixRunStatus.SUCCEEDED, repository, 2, selected=selection)
+    record("fast", AutoFixRunStatus.REJECTED, repository, 1)
+    record("slow", AutoFixRunStatus.FAILED, repository, 1)
+    record("slow", AutoFixRunStatus.INTERRUPTED, repository, 0)
+    record("fast", AutoFixRunStatus.SUCCEEDED, other_repository, 1)
+
+    outcomes = ledger.provider_outcomes(repository_path=repository)
+
+    assert outcomes["fast"].observations == 2
+    assert outcomes["fast"].succeeded == 1
+    assert outcomes["fast"].rejected == 1
+    assert outcomes["fast"].posterior_success_rate == 0.5
+    assert outcomes["fast"].average_attempts == 1.5
+    assert outcomes["slow"].observations == 1
+    assert outcomes["slow"].failed == 1
+    assert outcomes["slow"].interrupted == 1
+    assert outcomes["slow"].posterior_success_rate == 0.4
+    assert outcomes["slow"].average_attempts == 1
+    persisted = next(
+        run for run in ledger.list_autofix_runs() if run.generator_selection is not None
+    )
+    assert persisted.generator_selection == selection
+
+
+def test_ledger_migrates_pre_selection_autofix_schema(tmp_path: Path) -> None:
+    database = tmp_path / "legacy.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE autofix_runs (
+                run_id TEXT PRIMARY KEY,
+                repository_path TEXT NOT NULL,
+                trace_sha256 TEXT NOT NULL,
+                trace_json TEXT,
+                generator_provider TEXT NOT NULL,
+                max_attempts INTEGER NOT NULL,
+                promote_requested INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                final_candidate_id TEXT,
+                error_type TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    ledger = RepairLedger(database)
+    run = ledger.start_autofix_run(
+        repository_path=tmp_path,
+        trace=AgentTrace(task="Legacy schema migration"),
+        generator_provider="legacy",
+        max_attempts=1,
+        promote_requested=False,
+    )
+
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(autofix_runs)")}
+    assert "generator_selection" in columns
+    assert run.generator_selection is None

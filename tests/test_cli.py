@@ -7,7 +7,13 @@ from typer.testing import CliRunner
 
 from autoharness.cli import app
 from autoharness.ledger import RepairLedger
-from autoharness.models import AgentTrace, CandidateStatus, FailureType, Skill
+from autoharness.models import (
+    AgentTrace,
+    AutoFixRunStatus,
+    CandidateStatus,
+    FailureType,
+    Skill,
+)
 from autoharness.skills import SkillGenerator
 
 
@@ -290,6 +296,42 @@ def test_autofix_openai_cli_requires_network_acknowledgement(tmp_path: Path) -> 
     assert not (tmp_path / ".autoharness" / "ledger.db").exists()
 
 
+def test_autofix_adaptive_cli_requires_network_ack_for_any_child(tmp_path: Path) -> None:
+    _, plan = _verification_files(tmp_path)
+    generator = tmp_path / "adaptive-generator.json"
+    generator.write_text(
+        json.dumps(
+            {
+                "type": "adaptive",
+                "providers": [
+                    {"name": "local", "argv": [sys.executable, "generator.py"]},
+                    {"type": "openai", "name": "model", "model": "gpt-test"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trace = tmp_path / "trace.json"
+    trace.write_text(json.dumps({"task": "Fix the low value"}), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "autofix",
+            str(trace),
+            str(generator),
+            str(plan),
+            "--repo",
+            str(tmp_path),
+            "--allow-command-execution",
+        ],
+    )
+
+    assert result.exit_code == 6
+    assert "--allow-network-generation" in result.output
+    assert not (tmp_path / ".autoharness" / "ledger.db").exists()
+
+
 def test_autofix_generator_config_errors_do_not_echo_secret_values(tmp_path: Path) -> None:
     _, plan = _verification_files(tmp_path)
     secret = "sk-misplacedsecret123456"
@@ -356,6 +398,36 @@ def test_autofix_recover_cli_interrupts_stale_run(tmp_path: Path) -> None:
     assert payload[0]["status"] == "interrupted"
     assert payload[0]["error_type"] == "AutoFixInterrupted"
     assert payload[0]["trace"] is None
+
+
+def test_provider_outcomes_cli_reports_repository_evidence(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.db"
+    ledger = RepairLedger(ledger_path)
+    run = ledger.start_autofix_run(
+        repository_path=tmp_path,
+        trace=AgentTrace(task="Provider outcome"),
+        generator_provider="local-provider",
+        max_attempts=1,
+        promote_requested=False,
+    )
+    ledger.finish_autofix_run(run.run_id, AutoFixRunStatus.SUCCEEDED)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "provider-outcomes",
+            "--ledger",
+            str(ledger_path),
+            "--repo",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload[0]["provider"] == "local-provider"
+    assert payload[0]["observations"] == 1
+    assert payload[0]["succeeded"] == 1
 
 
 def test_skill_outcomes_cli_and_outcome_aware_recommendation(tmp_path: Path) -> None:

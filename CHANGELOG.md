@@ -2,6 +2,16 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.11.0 - 2026-08-07
+
+- Add adaptive portfolios over command and OpenAI patch generators.
+- Aggregate repository-scoped provider outcomes with a conservative Beta(2,2) prior.
+- Select under-sampled providers first, then balance posterior success and bounded UCB exploration.
+- Persist every selection decision, candidate score, and exploration reason with its AutoFix run.
+- Migrate existing SQLite ledgers in place without losing earlier run or attempt history.
+- Protect every command program in a portfolio and require network consent when any child may use it.
+- Add `provider-outcomes` plus deterministic selection, migration, CLI, and end-to-end tests.
+
 ## 0.10.0 - 2026-08-07
 
 - Add a built-in OpenAI Responses API patch generator using the official Python SDK.

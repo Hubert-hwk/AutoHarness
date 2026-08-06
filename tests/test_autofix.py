@@ -8,9 +8,14 @@ from typing import Any
 import pytest
 
 from autoharness.autofix import AutoFixPipeline
-from autoharness.generation import CommandPatchGenerator, OpenAIResponsesPatchGenerator
+from autoharness.generation import (
+    AdaptivePatchGenerator,
+    CommandPatchGenerator,
+    OpenAIResponsesPatchGenerator,
+)
 from autoharness.ledger import RepairLedger
 from autoharness.models import (
+    AdaptivePatchGeneratorConfig,
     AgentTrace,
     AutoFixPhase,
     AutoFixRunStatus,
@@ -392,6 +397,57 @@ def test_autofix_openai_provider_uses_evaluation_feedback_on_retry(tmp_path: Pat
     assert "benchmark.py" in second_context["protected_paths"]
     assert second_context["previous_attempts"][0]["phase"] == "evaluation"
     assert second_context["previous_attempts"][0]["metrics_after"] == {"score": 0.0}
+
+
+def test_autofix_adaptive_portfolio_explores_unobserved_provider_on_next_run(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "repository")
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    first = CommandPatchGenerator(
+        PatchGeneratorConfig(
+            name="first-provider",
+            argv=[sys.executable, "generator.py"],
+        )
+    )
+    second = CommandPatchGenerator(
+        PatchGeneratorConfig(
+            name="second-provider",
+            argv=[sys.executable, "generator.py"],
+        )
+    )
+    adaptive = AdaptivePatchGenerator(
+        AdaptivePatchGeneratorConfig(
+            providers=[
+                {
+                    "name": "first-provider",
+                    "argv": [sys.executable, "generator.py"],
+                },
+                {
+                    "name": "second-provider",
+                    "argv": [sys.executable, "generator.py"],
+                },
+            ],
+            minimum_trials=1,
+            exploration_weight=0,
+        ),
+        [first, second],
+    )
+    pipeline = AutoFixPipeline(adaptive, ledger, tmp_path / "skills")
+
+    first_result = pipeline.run(_trace(), repository, _plan())
+    second_result = pipeline.run(_trace(), repository, _plan())
+
+    assert first_result.run.generator_provider == "first-provider"
+    assert first_result.run.generator_selection is not None
+    assert first_result.run.generator_selection.selected_provider == "first-provider"
+    assert second_result.run.generator_provider == "second-provider"
+    assert second_result.run.generator_selection is not None
+    assert second_result.run.generator_selection.selected_provider == "second-provider"
+    assert second_result.run.generator_selection.exploration
+    outcomes = ledger.provider_outcomes(repository_path=repository)
+    assert outcomes["first-provider"].succeeded == 1
+    assert outcomes["second-provider"].succeeded == 1
 
 
 def test_autofix_never_retries_after_source_was_promoted(

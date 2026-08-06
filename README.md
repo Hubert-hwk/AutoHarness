@@ -27,6 +27,8 @@ pipeline that work locally without requiring an LLM or external service.
   repair history from the current repository.
 - Pluggable patch generation through an isolated command protocol or the built-in OpenAI
   Responses API provider.
+- Explainable adaptive generator portfolios that learn from repository-scoped run outcomes,
+  sample every provider, and retain controlled exploration.
 - End-to-end AutoFix orchestration from diagnosis and Skill retrieval through verification,
   optional promotion, and learning.
 - Feedback-driven AutoFix retries with structured failures, evaluation metrics, rejection
@@ -275,6 +277,55 @@ path and binary checks used by deterministic verification, rejects modifications
 unprovided files, and permits new files only with `allow_new_files: true`. The normal disposable
 baseline/candidate benchmarks remain the authority on whether a patch is accepted.
 
+Combine two or more providers in an adaptive portfolio:
+
+```json
+{
+  "type": "adaptive",
+  "name": "repair-portfolio",
+  "minimum_trials": 2,
+  "exploration_weight": 0.35,
+  "providers": [
+    {
+      "type": "command",
+      "name": "local-generator",
+      "argv": ["python", "generator.py"]
+    },
+    {
+      "type": "openai",
+      "name": "openai-responses",
+      "model": "gpt-5.6-sol"
+    }
+  ]
+}
+```
+
+Provider names must be unique and portfolios cannot be nested. AutoHarness first gives every
+provider `minimum_trials` terminal observations, using configuration order as the deterministic
+tie-breaker. It then ranks providers with a Beta(2,2) posterior success rate plus a bounded UCB
+exploration bonus. Setting `exploration_weight` to zero keeps minimum sampling but makes later
+selection pure exploitation. The evidence is scoped to the current repository and is associative:
+a successful run does not prove that its generator alone caused the result. Failed infrastructure
+and generation runs count as failures; interrupted runs are reported but excluded from quality
+observations because no terminal judgment was reached.
+
+Each AutoFix run stores the selected provider, every candidate's posterior, exploration bonus and
+score, and a human-readable decision reason. Inspect the aggregates independently:
+
+```bash
+autoharness provider-outcomes \
+  --ledger PATH/.autoharness/ledger.db \
+  --repo PATH
+```
+
+Aggregation reads the newest 5,000 terminal runs by default; use `--limit` to choose a different
+bounded history window. Existing ledgers are migrated in place when the selection-audit column is
+first needed. If any portfolio child is a network provider, `--allow-network-generation` is
+required even when the provider selected for a particular run is local. Every command program in
+the portfolio is protected from generated patches, not only the currently selected program. See
+[`adaptive_portfolio.json`](examples/verification_target/adaptive_portfolio.json) for a local,
+deterministic example.
+
 The generation context includes `attempt_number`, the effective verification contract, and
 structured `previous_attempts` entries with phase, candidate status, patch digest, before/after
 metrics, rejection reasons, and bounded errors. AutoHarness stores this provenance with the next
@@ -351,13 +402,13 @@ To include code localization, wrap the trace in an analysis request:
 - `evaluation.py` enforces tests, metric thresholds, and regression budgets.
 - `verification.py` validates patches and runs isolated before/after benchmarks.
 - `generation.py` defines the provider protocol, isolated command generator, bounded repository
-  context builder, and OpenAI Responses adapter.
+  context builder, OpenAI Responses adapter, and explainable adaptive portfolio selector.
 - `autofix.py` orchestrates feedback-driven Diagnose -> Retrieve -> Generate -> Verify ->
   Promote -> Learn attempts.
 - `RepairPipeline` promotes accepted candidates with stale-source detection and backups.
 - `ledger.py` persists heartbeat-backed AutoFix runs, immutable attempts, atomic interruption
-  recovery, the repair state machine, append-only lifecycle events, and Skill outcome associations
-  in SQLite.
+  recovery, provider selection evidence, repository-scoped outcomes, the repair state machine,
+  append-only lifecycle events, and Skill outcome associations in SQLite.
 - `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
 - `skills.py` converts validated repairs into portable YAML skills.
 - `registry.py` safely indexes and ranks the latest learned Skill versions with conservative,
@@ -367,7 +418,7 @@ To include code localization, wrap the trace in an analysis request:
 
 The deterministic verification core is intentional: it provides a measurable authority while
 keeping generation providers replaceable. Future phases will add richer benchmark integrations,
-controlled provider experiments, and feedback-driven harness optimization.
+causal credit assignment, and feedback-driven harness optimization.
 
 ## Development
 
@@ -397,8 +448,8 @@ uv run pytest
   auditing with interrupted-run recovery are available. A built-in OpenAI Responses provider now
   consumes verification and retry feedback; richer benchmark adapters are next.
 - **Phase 3 - Self-Evolving Harness:** versioned repair Skills and explainable retrieval are
-  available with outcome-aware selection; causal credit assignment, controlled exploration,
-  and harness optimization are next.
+  available with outcome-aware selection. Adaptive provider portfolios now perform controlled,
+  auditable exploration; causal credit assignment and harness optimization are next.
 
 ## License
 

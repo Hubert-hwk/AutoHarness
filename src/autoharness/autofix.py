@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from autoharness.evolution import EvolutionPipeline
-from autoharness.generation import PatchGenerationError, PatchGenerator
+from autoharness.generation import (
+    PatchGenerationError,
+    PatchGenerator,
+    generator_provider_name,
+)
 from autoharness.ledger import RepairLedger
 from autoharness.models import (
     AgentTrace,
@@ -20,6 +24,7 @@ from autoharness.models import (
     GeneratedPatch,
     PatchGenerationContext,
     PatchVerificationPlan,
+    ProviderSelection,
     RepairExperience,
     SkillRecommendationResult,
 )
@@ -61,10 +66,17 @@ class AutoFixPipeline:
                 older_than_seconds=recover_stale_after_seconds,
                 repository_path=source,
             )
+        self._configure_generator(source)
+        generator_selection = getattr(self.generator, "selection_metadata", None)
+        if generator_selection is not None and not isinstance(
+            generator_selection, ProviderSelection
+        ):
+            generator_selection = ProviderSelection.model_validate(generator_selection)
         run = self.ledger.start_autofix_run(
             repository_path=source,
             trace=trace,
             generator_provider=self._provider_name(),
+            generator_selection=generator_selection,
             max_attempts=max_attempts,
             promote_requested=promote,
             persist_trace=persist_trace,
@@ -321,12 +333,12 @@ class AutoFixPipeline:
         )
 
     def _provider_name(self) -> str:
-        provider_name = getattr(self.generator, "provider_name", None)
-        if provider_name:
-            return str(provider_name)
-        config = getattr(self.generator, "config", None)
-        name = getattr(config, "name", None)
-        return str(name or type(self.generator).__name__)
+        return generator_provider_name(self.generator)
+
+    def _configure_generator(self, repository: Path) -> None:
+        configure = getattr(self.generator, "configure_outcomes", None)
+        if callable(configure):
+            configure(self.ledger.provider_outcomes(repository_path=repository))
 
     @staticmethod
     def _bounded_error(error: Exception) -> str:

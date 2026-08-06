@@ -15,6 +15,7 @@ from autoharness.generation import (
     PatchGenerationError,
     create_patch_generator,
     parse_patch_generator_config,
+    requires_network_generation,
 )
 from autoharness.ledger import LedgerError, RepairLedger
 from autoharness.models import (
@@ -22,7 +23,6 @@ from autoharness.models import (
     AutoFixRunStatus,
     CandidateStatus,
     EvaluationRequest,
-    OpenAIPatchGeneratorConfig,
     PatchVerificationPlan,
     RepairExperience,
 )
@@ -301,6 +301,21 @@ def skill_outcomes(
     typer.echo(json.dumps([item.model_dump(mode="json") for item in ordered], indent=2))
 
 
+@app.command("provider-outcomes")
+def provider_outcomes(
+    ledger: Annotated[Path, typer.Option("--ledger", exists=True, dir_okay=False)],
+    repo: Annotated[
+        Path | None,
+        typer.Option("--repo", exists=True, file_okay=False, readable=True),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=50_000)] = 5000,
+) -> None:
+    """Show repository-scoped generator outcome evidence used by adaptive portfolios."""
+    outcomes = RepairLedger(ledger).provider_outcomes(repository_path=repo, limit=limit)
+    ordered = sorted(outcomes.values(), key=lambda item: (-item.observations, item.provider))
+    typer.echo(json.dumps([item.model_dump(mode="json") for item in ordered], indent=2))
+
+
 @app.command("autofix-runs")
 def autofix_runs(
     ledger: Annotated[Path, typer.Option("--ledger", exists=True, dir_okay=False)],
@@ -407,10 +422,7 @@ def autofix(
     try:
         trace = AgentTrace.model_validate(_load_json(trace_file))
         generator_config = _load_generator_config(generator_file)
-        if (
-            isinstance(generator_config, OpenAIPatchGeneratorConfig)
-            and not allow_network_generation
-        ):
+        if requires_network_generation(generator_config) and not allow_network_generation:
             typer.echo(
                 "Refusing to send Trace and source context to a network provider without "
                 "--allow-network-generation",

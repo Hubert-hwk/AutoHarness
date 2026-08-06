@@ -1,7 +1,12 @@
 """AutoHarness public package interface."""
 
-from autoharness.generation import CommandPatchGenerator, OpenAIResponsesPatchGenerator
+from autoharness.generation import (
+    AdaptivePatchGenerator,
+    CommandPatchGenerator,
+    OpenAIResponsesPatchGenerator,
+)
 from autoharness.models import (
+    AdaptivePatchGeneratorConfig,
     AgentTrace,
     AnalysisResult,
     AutoFixAttemptFeedback,
@@ -18,6 +23,8 @@ from autoharness.models import (
     PatchGeneratorConfig,
     PatchPromotionResult,
     PatchVerificationResult,
+    ProviderOutcomeStats,
+    ProviderSelection,
     RepairPipelineResult,
     SkillOutcomeStats,
     SkillRecommendationResult,
@@ -26,6 +33,8 @@ from autoharness.service import AutoHarness
 
 __all__ = [
     "AgentTrace",
+    "AdaptivePatchGenerator",
+    "AdaptivePatchGeneratorConfig",
     "AnalysisResult",
     "AutoHarness",
     "AutoFixAttemptFeedback",
@@ -44,8 +53,10 @@ __all__ = [
     "PatchGeneratorConfig",
     "PatchPromotionResult",
     "PatchVerificationResult",
+    "ProviderOutcomeStats",
+    "ProviderSelection",
     "RepairPipelineResult",
     "SkillRecommendationResult",
     "SkillOutcomeStats",
 ]
-__version__ = "0.10.0"
+__version__ = "0.11.0"

@@ -486,6 +486,58 @@ class OpenAIPatchGeneratorConfig(BaseModel):
         return list(dict.fromkeys(normalized))
 
 
+class AdaptivePatchGeneratorConfig(BaseModel):
+    """Select one child generator from repository-scoped historical outcomes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["adaptive"] = "adaptive"
+    name: str = "adaptive"
+    providers: list[dict[str, Any]] = Field(min_length=2, max_length=10)
+    minimum_trials: int = Field(default=2, ge=1, le=20)
+    exploration_weight: float = Field(default=0.35, ge=0, le=2)
+
+    @field_validator("name")
+    @classmethod
+    def adaptive_name_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Adaptive generator name must not be blank")
+        return value.strip()
+
+
+class ProviderOutcomeStats(BaseModel):
+    provider: str
+    observations: int = Field(ge=0)
+    succeeded: int = Field(ge=0)
+    rejected: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    interrupted: int = Field(ge=0)
+    posterior_success_rate: float = Field(ge=0, le=1)
+    confidence: float = Field(ge=0, le=1)
+    average_attempts: float = Field(ge=0)
+    last_run_at: datetime | None = None
+
+
+class ProviderSelectionCandidate(BaseModel):
+    provider: str
+    observations: int = Field(ge=0)
+    posterior_success_rate: float = Field(ge=0, le=1)
+    exploration_bonus: float = Field(ge=0)
+    selection_score: float = Field(ge=0)
+    under_sampled: bool = False
+
+
+class ProviderSelection(BaseModel):
+    strategy: str = "bayesian_ucb"
+    portfolio: str = "adaptive"
+    minimum_trials: int = Field(default=1, ge=1)
+    exploration_weight: float = Field(default=0, ge=0)
+    selected_provider: str
+    exploration: bool
+    reason: str
+    candidates: list[ProviderSelectionCandidate]
+
+
 class AutoFixAttemptFeedback(BaseModel):
     attempt_number: int = Field(ge=1, le=10)
     phase: AutoFixPhase
@@ -536,6 +588,7 @@ class AutoFixRunRecord(BaseModel):
     trace: AgentTrace | None = None
     trace_persisted: bool = False
     generator_provider: str
+    generator_selection: ProviderSelection | None = None
     max_attempts: int = Field(ge=1, le=10)
     promote_requested: bool
     status: AutoFixRunStatus

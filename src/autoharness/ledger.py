@@ -20,6 +20,8 @@ from autoharness.models import (
     AutoFixRunStatus,
     CandidateStatus,
     FailureType,
+    ProviderOutcomeStats,
+    ProviderSelection,
     RepairCandidateEvent,
     RepairCandidateRecord,
     SkillOutcomeStats,
@@ -197,6 +199,7 @@ class RepairLedger:
         repository_path: str | Path,
         trace: AgentTrace,
         generator_provider: str,
+        generator_selection: ProviderSelection | None = None,
         max_attempts: int,
         promote_requested: bool,
         persist_trace: bool = False,
@@ -215,9 +218,10 @@ class RepairLedger:
                 """
                 INSERT INTO autofix_runs (
                     run_id, repository_path, trace_sha256, trace_json,
-                    generator_provider, max_attempts, promote_requested, status,
+                    generator_provider, generator_selection, max_attempts,
+                    promote_requested, status,
                     final_candidate_id, error_type, error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
                 """,
                 (
                     run_id,
@@ -225,6 +229,11 @@ class RepairLedger:
                     trace_sha256,
                     trace_json if persist_trace else None,
                     provider,
+                    (
+                        self._json(generator_selection.model_dump(mode="json"))
+                        if generator_selection is not None
+                        else None
+                    ),
                     max_attempts,
                     int(promote_requested),
                     AutoFixRunStatus.RUNNING.value,
@@ -542,6 +551,84 @@ class RepairLedger:
             for row in rows
         ]
 
+    def provider_outcomes(
+        self,
+        *,
+        repository_path: str | Path | None = None,
+        limit: int = 5000,
+    ) -> dict[str, ProviderOutcomeStats]:
+        """Aggregate repository-scoped provider outcomes without causal overclaiming."""
+        bounded_limit = max(1, min(limit, 50_000))
+        query = """
+            SELECT r.generator_provider, r.status, r.updated_at,
+                   COUNT(a.attempt_number) AS attempt_count
+            FROM autofix_runs AS r
+            LEFT JOIN autofix_attempts AS a ON a.run_id = r.run_id
+            WHERE r.status != ?
+            GROUP BY r.run_id
+            ORDER BY r.updated_at DESC
+            LIMIT ?
+        """
+        parameters: tuple[Any, ...] = (AutoFixRunStatus.RUNNING.value, bounded_limit)
+        if repository_path is not None:
+            query = """
+                SELECT r.generator_provider, r.status, r.updated_at,
+                       COUNT(a.attempt_number) AS attempt_count
+                FROM autofix_runs AS r
+                LEFT JOIN autofix_attempts AS a ON a.run_id = r.run_id
+                WHERE r.status != ? AND r.repository_path = ?
+                GROUP BY r.run_id
+                ORDER BY r.updated_at DESC
+                LIMIT ?
+            """
+            parameters = (
+                AutoFixRunStatus.RUNNING.value,
+                str(Path(repository_path).expanduser().resolve()),
+                bounded_limit,
+            )
+        with self._connection() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+
+        aggregates: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            provider = str(row["generator_provider"])
+            status = AutoFixRunStatus(row["status"])
+            counts = aggregates.setdefault(
+                provider,
+                {
+                    "succeeded": 0,
+                    "rejected": 0,
+                    "failed": 0,
+                    "interrupted": 0,
+                    "attempts": 0,
+                    "last_run_at": row["updated_at"],
+                },
+            )
+            counts[status.value] += 1
+            if status != AutoFixRunStatus.INTERRUPTED:
+                counts["attempts"] += int(row["attempt_count"])
+
+        results: dict[str, ProviderOutcomeStats] = {}
+        for provider, counts in aggregates.items():
+            observations = counts["succeeded"] + counts["rejected"] + counts["failed"]
+            posterior = (counts["succeeded"] + 2) / (observations + 4)
+            confidence = observations / (observations + 5)
+            results[provider] = ProviderOutcomeStats(
+                provider=provider,
+                observations=observations,
+                succeeded=counts["succeeded"],
+                rejected=counts["rejected"],
+                failed=counts["failed"],
+                interrupted=counts["interrupted"],
+                posterior_success_rate=round(posterior, 4),
+                confidence=round(confidence, 4),
+                average_attempts=(
+                    round(counts["attempts"] / observations, 3) if observations else 0
+                ),
+                last_run_at=counts["last_run_at"],
+            )
+        return results
+
     def skill_outcomes(
         self,
         *,
@@ -689,6 +776,7 @@ class RepairLedger:
                     trace_sha256 TEXT NOT NULL,
                     trace_json TEXT,
                     generator_provider TEXT NOT NULL,
+                    generator_selection TEXT,
                     max_attempts INTEGER NOT NULL,
                     promote_requested INTEGER NOT NULL,
                     status TEXT NOT NULL,
@@ -727,6 +815,22 @@ class RepairLedger:
                     ON autofix_attempts(candidate_id);
                 """
             )
+            run_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(autofix_runs)").fetchall()
+            }
+            if "generator_selection" not in run_columns:
+                try:
+                    connection.execute(
+                        "ALTER TABLE autofix_runs ADD COLUMN generator_selection TEXT"
+                    )
+                except sqlite3.OperationalError:
+                    refreshed = {
+                        str(row["name"])
+                        for row in connection.execute("PRAGMA table_info(autofix_runs)").fetchall()
+                    }
+                    if "generator_selection" not in refreshed:
+                        raise
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -774,6 +878,7 @@ class RepairLedger:
     @staticmethod
     def _row_to_autofix_run(row: sqlite3.Row) -> AutoFixRunRecord:
         trace_json = row["trace_json"]
+        selection_json = row["generator_selection"]
         return AutoFixRunRecord(
             run_id=row["run_id"],
             repository_path=row["repository_path"],
@@ -785,6 +890,11 @@ class RepairLedger:
             ),
             trace_persisted=trace_json is not None,
             generator_provider=row["generator_provider"],
+            generator_selection=(
+                ProviderSelection.model_validate(RepairLedger._load_json(selection_json))
+                if selection_json is not None
+                else None
+            ),
             max_attempts=row["max_attempts"],
             promote_requested=bool(row["promote_requested"]),
             status=AutoFixRunStatus(row["status"]),

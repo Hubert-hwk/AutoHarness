@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -13,10 +14,14 @@ from typing import Any, Protocol
 from openai import OpenAI
 
 from autoharness.models import (
+    AdaptivePatchGeneratorConfig,
     GeneratedPatch,
     OpenAIPatchGeneratorConfig,
     PatchGenerationContext,
     PatchGeneratorConfig,
+    ProviderOutcomeStats,
+    ProviderSelection,
+    ProviderSelectionCandidate,
 )
 from autoharness.verification import (
     PatchValidator,
@@ -42,7 +47,7 @@ class PatchGenerator(Protocol):
     def protected_paths(self, repository: str | Path) -> list[str]: ...
 
 
-GeneratorConfig = PatchGeneratorConfig | OpenAIPatchGeneratorConfig
+GeneratorConfig = PatchGeneratorConfig | OpenAIPatchGeneratorConfig | AdaptivePatchGeneratorConfig
 
 
 def parse_patch_generator_config(value: object) -> GeneratorConfig:
@@ -54,13 +59,46 @@ def parse_patch_generator_config(value: object) -> GeneratorConfig:
         return PatchGeneratorConfig.model_validate(value)
     if provider_type == "openai":
         return OpenAIPatchGeneratorConfig.model_validate(value)
+    if provider_type == "adaptive":
+        config = AdaptivePatchGeneratorConfig.model_validate(value)
+        for child in config.providers:
+            child_config = parse_patch_generator_config(child)
+            if isinstance(child_config, AdaptivePatchGeneratorConfig):
+                raise ValueError("Adaptive patch generator portfolios may not be nested")
+        return config
     raise ValueError("Unknown patch generator type")
 
 
 def create_patch_generator(config: GeneratorConfig) -> PatchGenerator:
     if isinstance(config, OpenAIPatchGeneratorConfig):
         return OpenAIResponsesPatchGenerator(config)
+    if isinstance(config, AdaptivePatchGeneratorConfig):
+        child_configs = [parse_patch_generator_config(item) for item in config.providers]
+        if any(isinstance(item, AdaptivePatchGeneratorConfig) for item in child_configs):
+            raise ValueError("Adaptive patch generator portfolios may not be nested")
+        children = [create_patch_generator(item) for item in child_configs]
+        return AdaptivePatchGenerator(config, children)
     return CommandPatchGenerator(config)
+
+
+def requires_network_generation(config: GeneratorConfig) -> bool:
+    if isinstance(config, OpenAIPatchGeneratorConfig):
+        return True
+    if isinstance(config, AdaptivePatchGeneratorConfig):
+        return any(
+            requires_network_generation(parse_patch_generator_config(item))
+            for item in config.providers
+        )
+    return False
+
+
+def generator_provider_name(generator: PatchGenerator) -> str:
+    provider_name = getattr(generator, "provider_name", None)
+    if provider_name:
+        return str(provider_name)
+    config = getattr(generator, "config", None)
+    name = getattr(config, "name", None)
+    return str(name or type(generator).__name__)
 
 
 def _validated_patch(raw: str, *, max_patch_bytes: int) -> str:
@@ -462,3 +500,132 @@ class OpenAIResponsesPatchGenerator:
     def _redact_text(self, value: str) -> str:
         redacted = self._secret_pattern.sub("[REDACTED]", value)
         return self._bearer_pattern.sub(r"\1[REDACTED]", redacted)
+
+
+class AdaptivePatchGenerator:
+    """Choose one generator per AutoFix run using conservative historical evidence."""
+
+    def __init__(
+        self,
+        config: AdaptivePatchGeneratorConfig,
+        generators: list[PatchGenerator],
+    ) -> None:
+        if len(generators) != len(config.providers):
+            raise ValueError("Adaptive generator count does not match provider configuration")
+        names = [generator_provider_name(item) for item in generators]
+        if len(names) != len(set(names)):
+            raise ValueError("Adaptive generator provider names must be unique")
+        self.config = config
+        self.generators = generators
+        self._selected_index = 0
+        self._selection: ProviderSelection
+        self.configure_outcomes({})
+
+    @property
+    def provider_name(self) -> str:
+        return generator_provider_name(self.generators[self._selected_index])
+
+    @property
+    def selection_metadata(self) -> ProviderSelection:
+        return self._selection
+
+    def configure_outcomes(self, outcomes: dict[str, ProviderOutcomeStats]) -> None:
+        evidence = [
+            self._stats(generator_provider_name(item), outcomes) for item in self.generators
+        ]
+        under_sampled = [
+            index
+            for index, stats in enumerate(evidence)
+            if stats.observations < self.config.minimum_trials
+        ]
+        if under_sampled:
+            selected = min(under_sampled, key=lambda index: (evidence[index].observations, index))
+            candidates = [
+                ProviderSelectionCandidate(
+                    provider=stats.provider,
+                    observations=stats.observations,
+                    posterior_success_rate=stats.posterior_success_rate,
+                    exploration_bonus=0,
+                    selection_score=stats.posterior_success_rate,
+                    under_sampled=index in under_sampled,
+                )
+                for index, stats in enumerate(evidence)
+            ]
+            exploration = True
+            reason = (
+                f"Selected least-observed provider below minimum_trials="
+                f"{self.config.minimum_trials}"
+            )
+        else:
+            total = sum(item.observations for item in evidence)
+            candidates = []
+            for stats in evidence:
+                bonus = self.config.exploration_weight * math.sqrt(
+                    math.log(total + 1) / stats.observations
+                )
+                candidates.append(
+                    ProviderSelectionCandidate(
+                        provider=stats.provider,
+                        observations=stats.observations,
+                        posterior_success_rate=stats.posterior_success_rate,
+                        exploration_bonus=round(bonus, 4),
+                        selection_score=round(stats.posterior_success_rate + bonus, 4),
+                    )
+                )
+            selected = max(
+                range(len(candidates)),
+                key=lambda index: (candidates[index].selection_score, -index),
+            )
+            posterior_best = max(
+                range(len(candidates)),
+                key=lambda index: (candidates[index].posterior_success_rate, -index),
+            )
+            exploration = selected != posterior_best
+            reason = "Selected highest Bayesian posterior plus UCB exploration bonus"
+
+        self._selected_index = selected
+        self._selection = ProviderSelection(
+            portfolio=self.config.name,
+            minimum_trials=self.config.minimum_trials,
+            exploration_weight=self.config.exploration_weight,
+            selected_provider=candidates[selected].provider,
+            exploration=exploration,
+            reason=reason,
+            candidates=candidates,
+        )
+
+    def generate(
+        self,
+        repository: str | Path,
+        context: PatchGenerationContext,
+    ) -> GeneratedPatch:
+        return self.generators[self._selected_index].generate(repository, context)
+
+    def protected_paths(self, repository: str | Path) -> list[str]:
+        return list(
+            dict.fromkeys(
+                path
+                for generator in self.generators
+                for path in generator.protected_paths(repository)
+            )
+        )
+
+    @staticmethod
+    def _stats(
+        provider: str,
+        outcomes: dict[str, ProviderOutcomeStats],
+    ) -> ProviderOutcomeStats:
+        return outcomes.get(
+            provider,
+            ProviderOutcomeStats(
+                provider=provider,
+                observations=0,
+                succeeded=0,
+                rejected=0,
+                failed=0,
+                interrupted=0,
+                posterior_success_rate=0.5,
+                confidence=0,
+                average_attempts=0,
+            ),
+        )

@@ -10,17 +10,21 @@ from openai import OpenAI as SDKOpenAI
 
 from autoharness.diagnosis import FailureDiagnoser
 from autoharness.generation import (
+    AdaptivePatchGenerator,
     CommandPatchGenerator,
     OpenAIResponsesPatchGenerator,
     PatchGenerationError,
     create_patch_generator,
     parse_patch_generator_config,
+    requires_network_generation,
 )
 from autoharness.models import (
+    AdaptivePatchGeneratorConfig,
     AgentTrace,
     OpenAIPatchGeneratorConfig,
     PatchGenerationContext,
     PatchGeneratorConfig,
+    ProviderOutcomeStats,
 )
 
 
@@ -384,3 +388,125 @@ def test_generator_config_factory_preserves_command_compatibility() -> None:
         parse_patch_generator_config({"type": "unknown"})
     with pytest.raises(ValueError, match="safe relative paths"):
         OpenAIPatchGeneratorConfig(context_paths=["../secret.py"])
+
+
+def _provider_stats(
+    provider: str,
+    *,
+    observations: int,
+    succeeded: int,
+    posterior: float,
+) -> ProviderOutcomeStats:
+    return ProviderOutcomeStats(
+        provider=provider,
+        observations=observations,
+        succeeded=succeeded,
+        rejected=observations - succeeded,
+        failed=0,
+        interrupted=0,
+        posterior_success_rate=posterior,
+        confidence=observations / (observations + 5),
+        average_attempts=1,
+    )
+
+
+def test_adaptive_generator_explores_under_sampled_then_uses_bayesian_ucb() -> None:
+    first = CommandPatchGenerator(PatchGeneratorConfig(name="first", argv=["first-provider"]))
+    second = CommandPatchGenerator(PatchGeneratorConfig(name="second", argv=["second-provider"]))
+    config = AdaptivePatchGeneratorConfig(
+        providers=[
+            {"name": "first", "argv": ["first-provider"]},
+            {"name": "second", "argv": ["second-provider"]},
+        ],
+        minimum_trials=2,
+        exploration_weight=0.5,
+    )
+    adaptive = AdaptivePatchGenerator(config, [first, second])
+
+    assert adaptive.provider_name == "first"
+    adaptive.configure_outcomes(
+        {"first": _provider_stats("first", observations=1, succeeded=1, posterior=0.6)}
+    )
+    assert adaptive.provider_name == "second"
+    assert adaptive.selection_metadata.exploration
+    assert "least-observed" in adaptive.selection_metadata.reason
+    assert adaptive.selection_metadata.minimum_trials == 2
+    assert adaptive.selection_metadata.exploration_weight == 0.5
+
+    adaptive.configure_outcomes(
+        {
+            "first": _provider_stats("first", observations=10, succeeded=8, posterior=0.75),
+            "second": _provider_stats("second", observations=2, succeeded=1, posterior=0.7),
+        }
+    )
+    assert adaptive.provider_name == "second"
+    assert adaptive.selection_metadata.exploration
+    assert adaptive.selection_metadata.candidates[1].exploration_bonus > (
+        adaptive.selection_metadata.candidates[0].exploration_bonus
+    )
+
+    exploit = AdaptivePatchGenerator(
+        config.model_copy(update={"exploration_weight": 0}),
+        [first, second],
+    )
+    exploit.configure_outcomes(
+        {
+            "first": _provider_stats("first", observations=10, succeeded=8, posterior=0.75),
+            "second": _provider_stats("second", observations=2, succeeded=1, posterior=0.7),
+        }
+    )
+    assert exploit.provider_name == "first"
+    assert not exploit.selection_metadata.exploration
+
+
+def test_adaptive_generator_protects_every_child_program(tmp_path: Path) -> None:
+    (tmp_path / "first.py").write_text("print('first')\n", encoding="utf-8")
+    (tmp_path / "second.py").write_text("print('second')\n", encoding="utf-8")
+    first = CommandPatchGenerator(
+        PatchGeneratorConfig(name="first", argv=[sys.executable, "first.py"])
+    )
+    second = CommandPatchGenerator(
+        PatchGeneratorConfig(name="second", argv=[sys.executable, "second.py"])
+    )
+    adaptive = AdaptivePatchGenerator(
+        AdaptivePatchGeneratorConfig(
+            providers=[
+                {"name": "first", "argv": [sys.executable, "first.py"]},
+                {"name": "second", "argv": [sys.executable, "second.py"]},
+            ]
+        ),
+        [first, second],
+    )
+
+    assert adaptive.protected_paths(tmp_path) == ["first.py", "second.py"]
+
+
+def test_adaptive_config_factory_detects_network_and_rejects_invalid_portfolios() -> None:
+    payload = {
+        "type": "adaptive",
+        "providers": [
+            {"type": "command", "name": "local", "argv": ["generator"]},
+            {"type": "openai", "name": "model", "model": "gpt-test"},
+        ],
+    }
+    config = parse_patch_generator_config(payload)
+
+    assert isinstance(config, AdaptivePatchGeneratorConfig)
+    assert requires_network_generation(config)
+    assert isinstance(create_patch_generator(config), AdaptivePatchGenerator)
+
+    nested = {
+        "type": "adaptive",
+        "providers": [payload, {"name": "fallback", "argv": ["fallback"]}],
+    }
+    with pytest.raises(ValueError, match="may not be nested"):
+        parse_patch_generator_config(nested)
+
+    duplicate = AdaptivePatchGeneratorConfig(
+        providers=[
+            {"name": "same", "argv": ["one"]},
+            {"name": "same", "argv": ["two"]},
+        ]
+    )
+    with pytest.raises(ValueError, match="provider names must be unique"):
+        create_patch_generator(duplicate)
