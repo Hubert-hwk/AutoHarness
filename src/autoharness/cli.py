@@ -299,10 +299,15 @@ def skill_outcomes(
         Path | None,
         typer.Option("--repo", exists=True, file_okay=False, readable=True),
     ] = None,
+    failure_type: Annotated[FailureType | None, typer.Option("--failure-type")] = None,
     limit: Annotated[int, typer.Option("--limit", min=1, max=50_000)] = 5000,
 ) -> None:
-    """Show outcome evidence associated with retrieved Skill versions."""
-    outcomes = RepairLedger(ledger).skill_outcomes(repository_path=repo, limit=limit)
+    """Show contextual outcome evidence associated with retrieved Skill versions."""
+    outcomes = RepairLedger(ledger).skill_outcomes(
+        repository_path=repo,
+        failure_type=failure_type,
+        limit=limit,
+    )
     ordered = sorted(
         outcomes.values(),
         key=lambda item: (-item.observations, item.skill_name, -item.skill_version),

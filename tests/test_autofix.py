@@ -122,12 +122,13 @@ def _record_skill_outcome(
     repository: Path,
     skill_name: str,
     status: CandidateStatus,
+    failure_type: FailureType = FailureType.REASONING,
 ) -> None:
     candidate = ledger.propose(
         title="Historical outcome",
         repository_path=repository,
         patch_sha256=skill_name[0] * 64,
-        failure_type=FailureType.REASONING,
+        failure_type=failure_type,
         metadata={"retrieved_skills": [{"name": skill_name, "version": 1, "score": 10.0}]},
     )
     ledger.transition(candidate.candidate_id, status)
@@ -227,6 +228,43 @@ def test_autofix_orders_skill_context_using_repository_outcomes(tmp_path: Path) 
     assert best.outcome_stats is not None
     assert best.outcome_stats.accepted == 8
     assert any("observed outcomes" in reason for reason in best.reasons)
+
+
+def test_autofix_uses_failure_type_scoped_skill_evidence(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "repository")
+    skills = repository / ".autoharness" / "skills"
+    _seed_skill(skills)
+    ledger = RepairLedger(repository / ".autoharness" / "ledger.db")
+    _record_skill_outcome(
+        ledger,
+        repository,
+        "historical_score_repair",
+        CandidateStatus.VERIFIED,
+        FailureType.REASONING,
+    )
+    for _ in range(5):
+        _record_skill_outcome(
+            ledger,
+            repository,
+            "historical_score_repair",
+            CandidateStatus.REJECTED,
+            FailureType.RETRIEVAL,
+        )
+
+    result = AutoFixPipeline(_generator(), ledger, skills).run(
+        _trace(),
+        repository,
+        _plan(),
+        max_attempts=1,
+        skill_ablation_interval=0,
+    )
+
+    match = result.recommendation.skills.matches[0]
+    assert match.outcome_stats is not None
+    assert match.outcome_stats.failure_type == FailureType.REASONING
+    assert match.outcome_stats.observations == 1
+    assert match.outcome_stats.accepted == 1
+    assert match.health.status == SkillHealthStatus.LEARNING
 
 
 def test_autofix_records_periodic_skill_ablation_as_control_evidence(tmp_path: Path) -> None:

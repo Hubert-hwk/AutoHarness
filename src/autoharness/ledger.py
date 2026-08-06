@@ -737,6 +737,7 @@ class RepairLedger:
         self,
         *,
         repository_path: str | Path | None = None,
+        failure_type: FailureType | None = None,
         limit: int = 5000,
     ) -> dict[tuple[str, int], SkillOutcomeStats]:
         """Aggregate run-deduplicated exposed and controlled Skill outcomes.
@@ -746,24 +747,22 @@ class RepairLedger:
         adjustments keep both signals from overpowering diagnosis and content relevance.
         """
         bounded_limit = max(1, min(limit, 50_000))
+        conditions: list[str] = []
+        parameters: list[object] = []
+        if repository_path is not None:
+            conditions.append("repository_path = ?")
+            parameters.append(str(Path(repository_path).expanduser().resolve()))
+        if failure_type is not None:
+            conditions.append("failure_type = ?")
+            parameters.append(failure_type.value)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = (
+            "SELECT candidate_id, status, metadata FROM repair_candidates"
+            f"{where} ORDER BY updated_at DESC LIMIT ?"
+        )
+        parameters.append(bounded_limit)
         with self._connection() as connection:
-            if repository_path is None:
-                rows = connection.execute(
-                    """
-                    SELECT candidate_id, status, metadata FROM repair_candidates
-                    ORDER BY updated_at DESC LIMIT ?
-                    """,
-                    (bounded_limit,),
-                ).fetchall()
-            else:
-                resolved = str(Path(repository_path).expanduser().resolve())
-                rows = connection.execute(
-                    """
-                    SELECT candidate_id, status, metadata FROM repair_candidates
-                    WHERE repository_path = ? ORDER BY updated_at DESC LIMIT ?
-                    """,
-                    (resolved, bounded_limit),
-                ).fetchall()
+            rows = connection.execute(query, parameters).fetchall()
 
         precedence = {"unevaluated_failures": 0, "rejected": 1, "accepted": 2}
         units: dict[tuple[str, tuple[str, int], str], dict[str, object]] = {}
@@ -850,6 +849,7 @@ class RepairLedger:
             results[(name, version)] = SkillOutcomeStats(
                 skill_name=name,
                 skill_version=version,
+                failure_type=failure_type,
                 observations=observations,
                 accepted=counts["accepted"],
                 rejected=counts["rejected"],
@@ -965,6 +965,8 @@ class RepairLedger:
                     ON repair_candidates(patch_sha256);
                 CREATE INDEX IF NOT EXISTS idx_candidates_repository
                     ON repair_candidates(repository_path, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_candidates_repository_failure
+                    ON repair_candidates(repository_path, failure_type, updated_at);
                 CREATE INDEX IF NOT EXISTS idx_events_candidate
                     ON repair_events(candidate_id, sequence);
                 CREATE INDEX IF NOT EXISTS idx_autofix_runs_status

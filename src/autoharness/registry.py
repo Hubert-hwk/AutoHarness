@@ -13,6 +13,7 @@ from autoharness.code_graph import PythonCodeGraph
 from autoharness.diagnosis import FailureDiagnoser
 from autoharness.models import (
     AgentTrace,
+    FailureDiagnosis,
     FailureType,
     Skill,
     SkillHealth,
@@ -201,8 +202,11 @@ class SkillRegistry:
         if outcome is not None:
             score = max(0.0, score + outcome.score_adjustment)
             direction = "+" if outcome.score_adjustment >= 0 else ""
+            evidence_scope = (
+                outcome.failure_type.value if outcome.failure_type is not None else "all failures"
+            )
             reasons.append(
-                "observed outcomes: "
+                f"observed outcomes ({evidence_scope}): "
                 f"{outcome.accepted} accepted, {outcome.rejected} rejected, "
                 f"{outcome.unevaluated_failures} unevaluated failures; "
                 f"Bayesian rate {outcome.posterior_success_rate:.3f}, "
@@ -326,11 +330,12 @@ class SkillRecommender:
         limit: int = 5,
         same_failure_only: bool = True,
         allow_missing_directory: bool = False,
+        diagnosis: FailureDiagnosis | None = None,
         outcome_stats: dict[tuple[str, int], SkillOutcomeStats] | None = None,
         include_quarantined: bool = False,
         quarantine_probe_index: int | None = None,
     ) -> SkillRecommendationResult:
-        diagnosis = self.diagnoser.diagnose(trace)
+        diagnosis = diagnosis or self.diagnoser.diagnose(trace)
         locations = []
         if repository_path is not None:
             graph = PythonCodeGraph(repository_path)

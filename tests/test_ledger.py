@@ -220,6 +220,46 @@ def test_ledger_deduplicates_skill_evidence_across_autofix_retries(tmp_path: Pat
     assert stats.rejected == 0
 
 
+def test_ledger_isolates_skill_outcomes_by_failure_type(tmp_path: Path) -> None:
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    skill = {"name": "contextual_repair", "version": 1}
+    reasoning = ledger.propose(
+        title="Reasoning success",
+        repository_path=tmp_path,
+        patch_sha256="a" * 64,
+        failure_type=FailureType.REASONING,
+        metadata={"retrieved_skills": [skill]},
+    )
+    ledger.transition(reasoning.candidate_id, CandidateStatus.VERIFIED)
+    retrieval = ledger.propose(
+        title="Retrieval rejection",
+        repository_path=tmp_path,
+        patch_sha256="b" * 64,
+        failure_type=FailureType.RETRIEVAL,
+        metadata={"retrieved_skills": [skill]},
+    )
+    ledger.transition(retrieval.candidate_id, CandidateStatus.REJECTED)
+
+    reasoning_stats = ledger.skill_outcomes(
+        repository_path=tmp_path,
+        failure_type=FailureType.REASONING,
+    )[("contextual_repair", 1)]
+    retrieval_stats = ledger.skill_outcomes(
+        repository_path=tmp_path,
+        failure_type=FailureType.RETRIEVAL,
+    )[("contextual_repair", 1)]
+    global_stats = ledger.skill_outcomes(repository_path=tmp_path)[("contextual_repair", 1)]
+
+    assert reasoning_stats.failure_type == FailureType.REASONING
+    assert reasoning_stats.accepted == 1
+    assert reasoning_stats.rejected == 0
+    assert retrieval_stats.failure_type == FailureType.RETRIEVAL
+    assert retrieval_stats.accepted == 0
+    assert retrieval_stats.rejected == 1
+    assert global_stats.failure_type is None
+    assert global_stats.observations == 2
+
+
 def test_ledger_persists_autofix_run_without_trace_by_default(tmp_path: Path) -> None:
     database = tmp_path / "ledger.db"
     ledger = RepairLedger(database)

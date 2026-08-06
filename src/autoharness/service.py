@@ -19,6 +19,7 @@ from autoharness.models import (
     EvaluationResult,
     EvaluationSnapshot,
     EvolutionPipelineResult,
+    FailureType,
     PatchVerificationPlan,
     PatchVerificationResult,
     RepairExperience,
@@ -115,8 +116,15 @@ class AutoHarness:
         same_failure_only: bool = True,
         include_quarantined: bool = False,
     ) -> SkillRecommendationResult:
+        diagnosis = self.diagnoser.diagnose(trace)
+        evidence_failure_type = (
+            None if diagnosis.failure_type == FailureType.UNKNOWN else diagnosis.failure_type
+        )
         outcomes = (
-            RepairLedger(ledger_path).skill_outcomes(repository_path=repository_path)
+            RepairLedger(ledger_path).skill_outcomes(
+                repository_path=repository_path,
+                failure_type=evidence_failure_type,
+            )
             if ledger_path is not None
             else None
         )
@@ -126,6 +134,7 @@ class AutoHarness:
             repository_path=repository_path,
             limit=limit,
             same_failure_only=same_failure_only,
+            diagnosis=diagnosis,
             outcome_stats=outcomes,
             include_quarantined=include_quarantined,
         )

@@ -29,6 +29,8 @@ pipeline that work locally without requiring an LLM or external service.
   controlled, rotating re-evaluation probes.
 - Periodic Skill ablation that records run-deduplicated exposed/control outcomes and cautiously
   estimates whether retrieved experience improves repairs.
+- Failure-type-isolated Skill learning so evidence from one diagnosed repair context does not
+  silently alter ranking or health in another context.
 - Pluggable patch generation through an isolated command protocol or the built-in OpenAI
   Responses API provider.
 - Explainable adaptive generator portfolios that learn from repository-scoped run outcomes,
@@ -199,6 +201,13 @@ the control posterior. Its score contribution is bounded to +/-1 and shrunk by t
 sample confidence before joining the associative adjustment. This is a controlled estimate, not
 proof of causality: repository drift, other retrieved Skills, and generator changes can still
 confound it.
+
+AutoFix scopes both exposed and control evidence to the diagnosed failure type before ranking or
+health evaluation. For example, a Skill's reasoning-repair outcomes cannot quarantine it during a
+retrieval repair. `recommend-skills` applies the same isolation whenever a ledger is supplied, and
+`skill-outcomes --failure-type reasoning_failure` exposes the exact evidence slice for audit.
+Unknown diagnoses intentionally use global evidence because their retrieval falls back across
+failure categories. Omitting `--failure-type` preserves the backward-compatible global view.
 
 Every relevant Skill also receives an explainable health state. New Skills are `unobserved`; Skills
 with fewer than five repository-scoped observations remain `learning`. At five or more observations,
@@ -483,8 +492,8 @@ To include code localization, wrap the trace in an analysis request:
 - `RepairPipeline` promotes accepted candidates with stale-source detection and backups.
 - `ledger.py` persists heartbeat-backed AutoFix runs, immutable attempts, atomic interruption
   recovery, diagnosed failure context, provider selection and failover evidence, attempt-aware
-  repository-and-failure-scoped outcomes, the repair state machine, append-only lifecycle events,
-  and Skill outcome associations in SQLite.
+  repository-and-failure-scoped provider and Skill outcomes, the repair state machine, append-only
+  lifecycle events, and Skill outcome associations in SQLite.
 - `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
 - `skills.py` converts validated repairs into portable YAML skills.
 - `registry.py` safely indexes and ranks the latest learned Skill versions with conservative,
@@ -527,8 +536,9 @@ uv run pytest
   available with outcome-aware selection. Adaptive provider portfolios now perform controlled,
   auditable exploration, attempt-aware failover attribution, and failure-type-specialized
   selection. Skill health closes the outcome-to-retrieval feedback loop with quarantine and
-  recovery probes, while periodic ablation supplies a cautious controlled lift estimate. Richer
-  causal designs and harness optimization are next.
+  recovery probes, while periodic ablation supplies a cautious controlled lift estimate. Skill
+  outcome learning is now isolated by diagnosed failure type; richer causal designs and harness
+  optimization are next.
 
 ## License
 

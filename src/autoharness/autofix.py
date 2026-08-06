@@ -138,13 +138,21 @@ class AutoFixPipeline:
             and run_sequence % skill_quarantine_probe_interval == 0
         ):
             quarantine_probe_index = run_sequence // skill_quarantine_probe_interval - 1
+        diagnosis = self.recommender.diagnoser.diagnose(trace)
+        evidence_failure_type = (
+            None if diagnosis.failure_type == FailureType.UNKNOWN else diagnosis.failure_type
+        )
         recommendation = self.recommender.recommend(
             trace,
             self.skill_directory,
             repository_path=source,
             limit=skill_limit,
             allow_missing_directory=True,
-            outcome_stats=self.ledger.skill_outcomes(repository_path=source),
+            diagnosis=diagnosis,
+            outcome_stats=self.ledger.skill_outcomes(
+                repository_path=source,
+                failure_type=evidence_failure_type,
+            ),
             quarantine_probe_index=quarantine_probe_index,
         )
         recommendation = self._apply_skill_ablation(

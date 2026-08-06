@@ -2,6 +2,16 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.16.0 - 2026-08-07
+
+- Scope exposed and controlled Skill outcomes to the diagnosed failure type used for retrieval.
+- Prevent planning, retrieval, tool, memory, reasoning, validation, and unknown repair histories
+  from silently contaminating one another's Skill ranking and health evidence.
+- Diagnose once and pass the typed result through service and AutoFix recommendation paths.
+- Preserve a backward-compatible global aggregate and use it intentionally for unknown diagnoses.
+- Label every Skill outcome result with its evidence scope and explain that scope in ranking output.
+- Add `skill-outcomes --failure-type` plus ledger, AutoFix, service fallback, and CLI coverage.
+
 ## 0.15.0 - 2026-08-07
 
 - Periodically withhold one relevant non-probe Skill from AutoFix generation context on a

@@ -493,6 +493,16 @@ def test_skill_outcomes_cli_and_outcome_aware_recommendation(tmp_path: Path) -> 
         },
     )
     ledger.transition(candidate.candidate_id, CandidateStatus.VERIFIED)
+    unrelated = ledger.propose(
+        title="Unrelated retrieval rejection",
+        repository_path=tmp_path,
+        patch_sha256="b" * 64,
+        failure_type=FailureType.RETRIEVAL,
+        metadata={
+            "retrieved_skills": [{"name": "reliable_score_repair", "version": 1, "score": 9.0}]
+        },
+    )
+    ledger.transition(unrelated.candidate_id, CandidateStatus.REJECTED)
     trace = tmp_path / "outcome-trace.json"
     trace.write_text(
         json.dumps(
@@ -512,7 +522,15 @@ def test_skill_outcomes_cli_and_outcome_aware_recommendation(tmp_path: Path) -> 
 
     outcomes = CliRunner().invoke(
         app,
-        ["skill-outcomes", "--ledger", str(ledger.path), "--repo", str(tmp_path)],
+        [
+            "skill-outcomes",
+            "--ledger",
+            str(ledger.path),
+            "--repo",
+            str(tmp_path),
+            "--failure-type",
+            FailureType.REASONING.value,
+        ],
     )
     recommendation = CliRunner().invoke(
         app,
@@ -529,10 +547,14 @@ def test_skill_outcomes_cli_and_outcome_aware_recommendation(tmp_path: Path) -> 
     )
 
     assert outcomes.exit_code == 0
-    assert json.loads(outcomes.output)[0]["accepted"] == 1
+    outcome = json.loads(outcomes.output)[0]
+    assert outcome["failure_type"] == FailureType.REASONING.value
+    assert outcome["accepted"] == 1
+    assert outcome["rejected"] == 0
     assert recommendation.exit_code == 0
     match = json.loads(recommendation.output)["skills"]["matches"][0]
     assert match["outcome_stats"]["accepted"] == 1
+    assert match["outcome_stats"]["failure_type"] == FailureType.REASONING.value
     assert any("observed outcomes" in reason for reason in match["reasons"])
 
 

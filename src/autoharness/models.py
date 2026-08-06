@@ -391,6 +391,7 @@ class SkillLoadIssue(BaseModel):
 class SkillOutcomeStats(BaseModel):
     skill_name: str
     skill_version: int = Field(ge=1)
+    failure_type: FailureType | None = None
     observations: int = Field(ge=0)
     accepted: int = Field(ge=0)
     rejected: int = Field(ge=0)
