@@ -216,7 +216,7 @@ class PatchVerificationPlan(BaseModel):
     metrics_file: str = ".autoharness-metrics.json"
     policy: EvaluationPolicy
     stop_on_failure: bool = True
-    protected_paths: list[str] = Field(default_factory=lambda: [".github", "tests"])
+    protected_paths: list[str] = Field(default_factory=lambda: [".autoharness", ".github", "tests"])
 
     @field_validator("metrics_file")
     @classmethod
@@ -253,12 +253,38 @@ class BenchmarkRun(BaseModel):
     commands: list[CommandExecution]
 
 
+class SourceFileFingerprint(BaseModel):
+    path: str
+    existed: bool
+    sha256: str | None = None
+
+
+class VerificationAttestation(BaseModel):
+    patch_sha256: str
+    source_files: list[SourceFileFingerprint]
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class PatchVerificationResult(BaseModel):
     accepted: bool
     changed_paths: list[str]
     baseline: BenchmarkRun
     candidate: BenchmarkRun
     evaluation: EvaluationResult
+    attestation: VerificationAttestation
+
+
+class PatchPromotionResult(BaseModel):
+    applied: bool
+    changed_paths: list[str]
+    patch_sha256: str
+    backup_path: str
+    applied_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class RepairPipelineResult(BaseModel):
+    verification: PatchVerificationResult
+    promotion: PatchPromotionResult | None = None
 
 
 class RepairExperience(BaseModel):

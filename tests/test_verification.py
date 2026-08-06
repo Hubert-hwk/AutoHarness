@@ -11,7 +11,13 @@ from autoharness.models import (
     MetricRule,
     PatchVerificationPlan,
 )
-from autoharness.verification import PatchValidator, PatchVerifier, VerificationError
+from autoharness.verification import (
+    PatchPromoter,
+    PatchValidator,
+    PatchVerifier,
+    RepairPipeline,
+    VerificationError,
+)
 
 
 def _repository(path: Path) -> Path:
@@ -59,6 +65,9 @@ def test_patch_verifier_accepts_improvement_without_mutating_source(tmp_path: Pa
     assert result.candidate.snapshot.metrics == {"score": 2.0}
     assert (repository / "value.txt").read_text(encoding="utf-8") == "1\n"
     assert not (repository / ".autoharness-metrics.json").exists()
+    assert len(result.attestation.patch_sha256) == 64
+    assert result.attestation.source_files[0].path == "value.txt"
+    assert result.attestation.source_files[0].existed
 
 
 def test_patch_verifier_rejects_regression(tmp_path: Path) -> None:
@@ -84,6 +93,10 @@ def test_patch_verifier_rejects_regression(tmp_path: Path) -> None:
         (
             "--- a/image.bin\n+++ b/image.bin\nGIT binary patch\n",
             "Binary patches",
+        ),
+        (
+            "--- a/.autoharness/state.json\n+++ b/.autoharness/state.json\n@@ -1 +1 @@\n-a\n+b\n",
+            "protected path",
         ),
     ],
 )
@@ -127,3 +140,69 @@ def test_plan_json_round_trip(tmp_path: Path) -> None:
     restored = PatchVerificationPlan.model_validate(json.loads(output.read_text(encoding="utf-8")))
 
     assert restored == plan
+
+
+def test_repair_pipeline_promotes_accepted_patch_with_backup(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+
+    result = RepairPipeline().run(repository, _patch(2), _plan(), promote=True)
+
+    assert result.verification.accepted
+    assert result.promotion is not None
+    assert result.promotion.applied
+    assert (repository / "value.txt").read_text(encoding="utf-8") == "2\n"
+    backup = Path(result.promotion.backup_path)
+    assert (backup / "files" / "value.txt").read_text(encoding="utf-8") == "1\n"
+    assert (backup / "manifest.json").is_file()
+
+
+def test_rejected_patch_is_never_promoted(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+
+    result = RepairPipeline().run(repository, _patch(0), _plan(), promote=True)
+
+    assert not result.verification.accepted
+    assert result.promotion is None
+    assert (repository / "value.txt").read_text(encoding="utf-8") == "1\n"
+    assert not (repository / ".autoharness").exists()
+
+
+def test_promoter_rejects_source_change_after_verification(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    patch = _patch(2)
+    plan = _plan()
+    verification = PatchVerifier().verify(repository, patch, plan)
+    (repository / "value.txt").write_bytes(b"3\n")
+
+    with pytest.raises(VerificationError, match="Source files changed"):
+        PatchPromoter().promote(repository, patch, plan, verification)
+
+
+def test_promoter_rejects_patch_replacement(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    plan = _plan()
+    verification = PatchVerifier().verify(repository, _patch(2), plan)
+
+    with pytest.raises(VerificationError, match="Patch content differs"):
+        PatchPromoter().promote(repository, _patch(3), plan, verification)
+
+
+def test_promoter_restores_backup_when_apply_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = _repository(tmp_path)
+    patch = _patch(2)
+    plan = _plan()
+    verification = PatchVerifier().verify(repository, patch, plan)
+    promoter = PatchPromoter()
+
+    def fail_after_write(workspace: Path, _patch_text: str) -> None:
+        (workspace / "value.txt").write_bytes(b"corrupt\n")
+        raise VerificationError("simulated apply failure")
+
+    monkeypatch.setattr(promoter.patch_validator, "apply", fail_after_write)
+
+    with pytest.raises(VerificationError, match="simulated apply failure"):
+        promoter.promote(repository, patch, plan, verification)
+
+    assert (repository / "value.txt").read_text(encoding="utf-8") == "1\n"

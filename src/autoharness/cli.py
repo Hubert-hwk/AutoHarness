@@ -108,6 +108,50 @@ def verify_patch(
         raise typer.Exit(code=2)
 
 
+@app.command("repair-patch")
+def repair_patch(
+    patch_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    plan_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    repo: Annotated[
+        Path, typer.Option("--repo", exists=True, file_okay=False, readable=True)
+    ] = Path("."),
+    allow_command_execution: Annotated[
+        bool,
+        typer.Option(
+            "--allow-command-execution",
+            help="Required acknowledgement that benchmark commands are trusted.",
+        ),
+    ] = False,
+    apply_to_source: Annotated[
+        bool,
+        typer.Option(
+            "--apply-to-source",
+            help="Required acknowledgement that an accepted patch may modify the source.",
+        ),
+    ] = False,
+) -> None:
+    """Verify and promote an accepted patch to the source with a recoverable backup."""
+    if not allow_command_execution:
+        typer.echo(
+            "Refusing to execute benchmark commands without --allow-command-execution",
+            err=True,
+        )
+        raise typer.Exit(code=4)
+    if not apply_to_source:
+        typer.echo("Refusing to modify the source without --apply-to-source", err=True)
+        raise typer.Exit(code=5)
+    try:
+        patch = patch_file.read_text(encoding="utf-8")
+        plan = PatchVerificationPlan.model_validate(_load_json(plan_file))
+        result = AutoHarness().repair_patch(repo, patch, plan, promote=True)
+    except (OSError, VerificationError) as exc:
+        typer.echo(f"Repair failed: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    typer.echo(result.model_dump_json(indent=2))
+    if not result.verification.accepted:
+        raise typer.Exit(code=2)
+
+
 @app.command()
 def serve(
     host: Annotated[str, typer.Option()] = "127.0.0.1",

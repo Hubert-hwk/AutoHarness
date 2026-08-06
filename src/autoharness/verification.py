@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -11,6 +12,7 @@ import tempfile
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -20,8 +22,12 @@ from autoharness.models import (
     BenchmarkRun,
     CommandExecution,
     EvaluationSnapshot,
+    PatchPromotionResult,
     PatchVerificationPlan,
     PatchVerificationResult,
+    RepairPipelineResult,
+    SourceFileFingerprint,
+    VerificationAttestation,
 )
 
 
@@ -91,7 +97,7 @@ class PatchValidator:
         path = PurePosixPath(value.replace("\\", "/"))
         if path.is_absolute() or ".." in path.parts or not path.parts:
             raise VerificationError(f"Patch contains an unsafe path: {value}")
-        if ".git" in path.parts or ":" in path.parts[0]:
+        if {".autoharness", ".git"}.intersection(path.parts) or ":" in path.parts[0]:
             raise VerificationError(f"Patch contains a protected path: {value}")
         return path.as_posix()
 
@@ -234,6 +240,42 @@ class BenchmarkRunner:
         return decoded[-self.output_limit :]
 
 
+class SourceFingerprinter:
+    """Capture stable hashes for the exact source files touched by a patch."""
+
+    @staticmethod
+    def patch_sha256(patch: str) -> str:
+        return hashlib.sha256(patch.encode("utf-8")).hexdigest()
+
+    def capture(self, source: Path, paths: list[str]) -> list[SourceFileFingerprint]:
+        fingerprints: list[SourceFileFingerprint] = []
+        for relative in sorted(paths):
+            target = source / Path(relative)
+            if target.is_symlink():
+                raise VerificationError(f"Patch target may not be a symbolic link: {relative}")
+            if not target.exists():
+                fingerprints.append(SourceFileFingerprint(path=relative, existed=False))
+                continue
+            if not target.is_file():
+                raise VerificationError(f"Patch target is not a regular file: {relative}")
+            fingerprints.append(
+                SourceFileFingerprint(
+                    path=relative,
+                    existed=True,
+                    sha256=self._file_sha256(target),
+                )
+            )
+        return fingerprints
+
+    @staticmethod
+    def _file_sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+
 class PatchVerifier:
     """Benchmark a source baseline and patched candidate in separate disposable copies."""
 
@@ -241,6 +283,7 @@ class PatchVerifier:
         self.patch_validator = PatchValidator()
         self.benchmark_runner = BenchmarkRunner()
         self.evaluation_gate = EvaluationGate()
+        self.fingerprinter = SourceFingerprinter()
 
     def verify(
         self,
@@ -256,6 +299,10 @@ class PatchVerifier:
             patch,
             protected_paths,
             plan.metrics_file,
+        )
+        attestation = VerificationAttestation(
+            patch_sha256=self.fingerprinter.patch_sha256(patch),
+            source_files=self.fingerprinter.capture(source, changed_paths),
         )
 
         with self._isolated_copy(source) as baseline_workspace:
@@ -275,6 +322,7 @@ class PatchVerifier:
             baseline=baseline,
             candidate=candidate,
             evaluation=evaluation,
+            attestation=attestation,
         )
 
     @staticmethod
@@ -316,3 +364,115 @@ class PatchVerifier:
         base = Path(directory)
         ignored.update(name for name in names if (base / name).is_symlink())
         return ignored
+
+
+class PatchPromoter:
+    """Apply an accepted patch only when its verified source state is still current."""
+
+    def __init__(self) -> None:
+        self.patch_validator = PatchValidator()
+        self.fingerprinter = SourceFingerprinter()
+
+    def promote(
+        self,
+        repository: str | Path,
+        patch: str,
+        plan: PatchVerificationPlan,
+        verification: PatchVerificationResult,
+    ) -> PatchPromotionResult:
+        if not verification.accepted:
+            raise VerificationError("Rejected patches cannot be promoted")
+        source = Path(repository).expanduser().resolve()
+        if not source.is_dir():
+            raise VerificationError(f"Repository path is not a directory: {source}")
+
+        protected_paths = [*plan.protected_paths, *PatchVerifier._command_input_paths(source, plan)]
+        changed_paths = self.patch_validator.inspect(
+            patch,
+            protected_paths,
+            plan.metrics_file,
+        )
+        if changed_paths != verification.changed_paths:
+            raise VerificationError("Patch paths differ from the verified candidate")
+
+        patch_sha256 = self.fingerprinter.patch_sha256(patch)
+        if patch_sha256 != verification.attestation.patch_sha256:
+            raise VerificationError("Patch content differs from the verified candidate")
+
+        current = self.fingerprinter.capture(source, changed_paths)
+        if current != verification.attestation.source_files:
+            raise VerificationError("Source files changed after verification; re-run verification")
+
+        backup = self._create_backup(source, current, patch_sha256)
+        try:
+            self.patch_validator.apply(source, patch)
+        except VerificationError:
+            self._restore_backup(source, backup, current)
+            raise
+        return PatchPromotionResult(
+            applied=True,
+            changed_paths=changed_paths,
+            patch_sha256=patch_sha256,
+            backup_path=str(backup),
+        )
+
+    @staticmethod
+    def _create_backup(
+        source: Path,
+        fingerprints: list[SourceFileFingerprint],
+        patch_sha256: str,
+    ) -> Path:
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        backup = source / ".autoharness" / "backups" / f"{timestamp}-{patch_sha256[:8]}"
+        files = backup / "files"
+        files.mkdir(parents=True)
+        for fingerprint in fingerprints:
+            if fingerprint.existed:
+                destination = files / Path(fingerprint.path)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source / Path(fingerprint.path), destination)
+        manifest = {
+            "patch_sha256": patch_sha256,
+            "source_files": [item.model_dump(mode="json") for item in fingerprints],
+        }
+        (backup / "manifest.json").write_text(
+            json.dumps(manifest, indent=2),
+            encoding="utf-8",
+        )
+        return backup
+
+    @staticmethod
+    def _restore_backup(
+        source: Path,
+        backup: Path,
+        fingerprints: list[SourceFileFingerprint],
+    ) -> None:
+        for fingerprint in fingerprints:
+            target = source / Path(fingerprint.path)
+            if fingerprint.existed:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup / "files" / Path(fingerprint.path), target)
+            elif target.is_file() or target.is_symlink():
+                target.unlink()
+
+
+class RepairPipeline:
+    """Verify a repair candidate and optionally promote it to the source checkout."""
+
+    def __init__(self) -> None:
+        self.verifier = PatchVerifier()
+        self.promoter = PatchPromoter()
+
+    def run(
+        self,
+        repository: str | Path,
+        patch: str,
+        plan: PatchVerificationPlan,
+        *,
+        promote: bool = False,
+    ) -> RepairPipelineResult:
+        verification = self.verifier.verify(repository, patch, plan)
+        promotion = None
+        if promote and verification.accepted:
+            promotion = self.promoter.promote(repository, patch, plan, verification)
+        return RepairPipelineResult(verification=verification, promotion=promotion)

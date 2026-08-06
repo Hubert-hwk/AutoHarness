@@ -11,6 +11,8 @@ All notable changes to AutoHarness are documented here.
 - Add disposable baseline/candidate workspaces and non-destructive unified-diff verification.
 - Protect benchmark inputs, tests, metrics, and repository metadata from candidate changes.
 - Add trusted-command acknowledgement and machine-readable patch verification results.
+- Add verified-candidate promotion with patch digests and touched-file fingerprints.
+- Detect source changes between verification and promotion and create recoverable backups.
 
 ## 0.1.0 - 2026-08-07
 

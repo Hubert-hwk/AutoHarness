@@ -16,10 +16,11 @@ from autoharness.models import (
     PatchVerificationPlan,
     PatchVerificationResult,
     RepairExperience,
+    RepairPipelineResult,
     Skill,
 )
 from autoharness.skills import SkillGenerator
-from autoharness.verification import PatchVerifier
+from autoharness.verification import PatchVerifier, RepairPipeline
 
 
 class AutoHarness:
@@ -28,6 +29,7 @@ class AutoHarness:
         self.evaluation_gate = EvaluationGate()
         self.skill_generator = SkillGenerator()
         self.patch_verifier = PatchVerifier()
+        self.repair_pipeline = RepairPipeline()
 
     def analyze(
         self,
@@ -68,3 +70,13 @@ class AutoHarness:
         plan: PatchVerificationPlan,
     ) -> PatchVerificationResult:
         return self.patch_verifier.verify(repository, patch, plan)
+
+    def repair_patch(
+        self,
+        repository: str | Path,
+        patch: str,
+        plan: PatchVerificationPlan,
+        *,
+        promote: bool = False,
+    ) -> RepairPipelineResult:
+        return self.repair_pipeline.run(repository, patch, plan, promote=promote)

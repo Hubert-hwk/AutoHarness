@@ -108,6 +108,21 @@ Benchmark commands are executed directly without a shell, but they are still pro
 the local machine. Only use trusted commands and pass `--allow-command-execution` explicitly;
 the disposable workspace is not an operating-system security sandbox.
 
+Promote an accepted candidate to the source checkout:
+
+```bash
+autoharness repair-patch PATCH PLAN \
+  --repo PATH \
+  --allow-command-execution \
+  --apply-to-source
+```
+
+`repair-patch` performs verification and promotion in one process. It records the patch
+SHA-256 and the original hash/existence of every touched file, then checks them again before
+applying the patch. Rejected candidates, replaced patch content, or source changes after
+verification are never promoted. Original files are copied to
+`PATH/.autoharness/backups/` before mutation so an applied repair remains recoverable.
+
 See [`examples/repair_experience.json`](examples/repair_experience.json) for the expected
 repair format.
 
@@ -136,6 +151,7 @@ To include code localization, wrap the trace in an analysis request:
 - `code_graph.py` builds and queries a lightweight Python code graph.
 - `evaluation.py` enforces tests, metric thresholds, and regression budgets.
 - `verification.py` validates patches and runs isolated before/after benchmarks.
+- `RepairPipeline` promotes accepted candidates with stale-source detection and backups.
 - `skills.py` converts validated repairs into portable YAML skills.
 - `service.py` orchestrates the Observe → Diagnose → Localize → Learn workflow.
 - `api.py` and `cli.py` are transport adapters.
@@ -168,7 +184,8 @@ uv run pytest
 
 - **Phase 1 — Agent Debug Copilot:** trace ingestion, diagnosis, and code localization.
 - **Phase 2 — AutoFix Agent:** evaluation gates and non-destructive patch verification are
-  available; patch generation and richer benchmark adapters are next.
+  available, including guarded promotion; patch generation and richer benchmark adapters
+  are next.
 - **Phase 3 — Self-Evolving Harness:** harness optimization, experience memory, and skill
   selection/evolution.
 
