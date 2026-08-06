@@ -167,3 +167,59 @@ def test_evolve_patch_cli_records_and_learns(tmp_path: Path) -> None:
     )
     assert recommendation.exit_code == 0
     assert '"name": "improve_score"' in recommendation.output
+
+
+def test_autofix_cli_runs_full_pipeline(tmp_path: Path) -> None:
+    _, plan = _verification_files(tmp_path)
+    (tmp_path / "generator.py").write_text(
+        "import json, sys\n"
+        "json.load(sys.stdin)\n"
+        "sys.stdout.write('--- a/value.txt\\n+++ b/value.txt\\n@@ -1 +1 @@\\n-1\\n+2\\n')\n",
+        encoding="utf-8",
+    )
+    generator = tmp_path / "generator.json"
+    generator.write_text(
+        json.dumps(
+            {
+                "name": "cli-generator",
+                "argv": [sys.executable, "generator.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trace = tmp_path / "trace.json"
+    trace.write_text(
+        json.dumps(
+            {
+                "task": "Fix an incorrect low score",
+                "events": [
+                    {
+                        "kind": "response",
+                        "status": "failure",
+                        "error": "incorrect answer",
+                    }
+                ],
+                "feedback": "low score",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "autofix",
+            str(trace),
+            str(generator),
+            str(plan),
+            "--repo",
+            str(tmp_path),
+            "--allow-command-execution",
+            "--apply-to-source",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert '"provider": "cli-generator"' in result.output
+    assert '"status": "learned"' in result.output
+    assert (tmp_path / "value.txt").read_text(encoding="utf-8") == "2\n"

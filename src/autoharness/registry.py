@@ -9,11 +9,16 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from autoharness.code_graph import PythonCodeGraph
+from autoharness.diagnosis import FailureDiagnoser
 from autoharness.models import (
+    AgentTrace,
+    FailureType,
     Skill,
     SkillLoadIssue,
     SkillMatch,
     SkillQuery,
+    SkillRecommendationResult,
     SkillSearchResult,
 )
 
@@ -189,3 +194,65 @@ class SkillRegistry:
     def _list_context_value(skill: Skill, key: str) -> list[Any]:
         value = skill.context.get(key, [])
         return value if isinstance(value, list) else []
+
+
+class SkillRecommender:
+    """Combine trace diagnosis, code localization, and learned Skill retrieval."""
+
+    def __init__(self) -> None:
+        self.diagnoser = FailureDiagnoser()
+
+    def recommend(
+        self,
+        trace: AgentTrace,
+        skill_directory: str | Path,
+        *,
+        repository_path: str | Path | None = None,
+        limit: int = 5,
+        same_failure_only: bool = True,
+        allow_missing_directory: bool = False,
+    ) -> SkillRecommendationResult:
+        diagnosis = self.diagnoser.diagnose(trace)
+        locations = []
+        if repository_path is not None:
+            graph = PythonCodeGraph(repository_path)
+            graph.build()
+            locations = graph.locate(diagnosis, limit=8)
+        text = " ".join(
+            [
+                trace.task,
+                *trace.logs,
+                trace.feedback or "",
+                diagnosis.summary,
+                *diagnosis.likely_causes,
+                *diagnosis.search_terms,
+                *(evidence.excerpt for evidence in diagnosis.evidence),
+            ]
+        )
+        components = list(
+            dict.fromkeys(
+                value
+                for location in locations
+                for value in (location.symbol, Path(location.path).stem)
+            )
+        )
+        directory = Path(skill_directory).expanduser().resolve()
+        if allow_missing_directory and not directory.exists():
+            search = SkillSearchResult(matches=[], indexed_skills=0)
+        else:
+            search = SkillRegistry(directory).search(
+                SkillQuery(
+                    failure_type=diagnosis.failure_type,
+                    text=text,
+                    components=components,
+                    limit=limit,
+                    same_failure_only=(
+                        same_failure_only and diagnosis.failure_type != FailureType.UNKNOWN
+                    ),
+                )
+            )
+        return SkillRecommendationResult(
+            diagnosis=diagnosis,
+            code_locations=locations,
+            skills=search,
+        )

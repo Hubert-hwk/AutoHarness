@@ -2,6 +2,14 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.5.0 - 2026-08-07
+
+- Add a typed patch-generator protocol with JSON context and unified-diff output.
+- Run command generators in disposable repository copies with time, size, and output guards.
+- Add the end-to-end AutoFix loop: diagnose, retrieve, generate, verify, promote, and learn.
+- Protect generator programs from generated patches and preserve verify-only behavior by default.
+- Add the `autofix` CLI workflow, example generator, and Windows newline compatibility.
+
 ## 0.4.0 - 2026-08-07
 
 - Add a safe YAML Skill Registry with invalid-file diagnostics and resource limits.

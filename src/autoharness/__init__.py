@@ -3,6 +3,7 @@
 from autoharness.models import (
     AgentTrace,
     AnalysisResult,
+    AutoFixPipelineResult,
     EvaluationResult,
     EvolutionPipelineResult,
     FailureDiagnosis,
@@ -17,6 +18,7 @@ __all__ = [
     "AgentTrace",
     "AnalysisResult",
     "AutoHarness",
+    "AutoFixPipelineResult",
     "EvaluationResult",
     "EvolutionPipelineResult",
     "FailureDiagnosis",
@@ -25,4 +27,4 @@ __all__ = [
     "RepairPipelineResult",
     "SkillRecommendationResult",
 ]
-__version__ = "0.4.0"
+__version__ = "0.5.0"

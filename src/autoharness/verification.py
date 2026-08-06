@@ -35,6 +35,36 @@ class VerificationError(RuntimeError):
     """Raised when a patch or benchmark cannot be verified safely."""
 
 
+@contextmanager
+def isolated_repository_copy(source: Path) -> Iterator[Path]:
+    """Yield a disposable copy without VCS metadata, dependencies, caches, or symlinks."""
+    with tempfile.TemporaryDirectory(prefix="autoharness-") as temporary:
+        workspace = Path(temporary) / "workspace"
+        shutil.copytree(source, workspace, ignore=_repository_copy_ignore, symlinks=True)
+        yield workspace
+
+
+def _repository_copy_ignore(directory: str, names: list[str]) -> set[str]:
+    excluded_names = {
+        ".autoharness",
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".uv-cache",
+        ".uv-python",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "node_modules",
+    }
+    ignored = {name for name in names if name in excluded_names}
+    base = Path(directory)
+    ignored.update(name for name in names if (base / name).is_symlink())
+    return ignored
+
+
 class PatchValidator:
     """Validate patch structure and paths before delegating to ``git apply``."""
 
@@ -109,7 +139,7 @@ class PatchValidator:
         *,
         check: bool,
     ) -> subprocess.CompletedProcess[bytes]:
-        command = [git, "apply", "--whitespace=error"]
+        command = [git, "apply", "--whitespace=error", "--ignore-space-change"]
         if check:
             command.append("--check")
         command.append("-")
@@ -305,9 +335,9 @@ class PatchVerifier:
             source_files=self.fingerprinter.capture(source, changed_paths),
         )
 
-        with self._isolated_copy(source) as baseline_workspace:
+        with isolated_repository_copy(source) as baseline_workspace:
             baseline = self.benchmark_runner.run(baseline_workspace, plan, "baseline")
-        with self._isolated_copy(source) as candidate_workspace:
+        with isolated_repository_copy(source) as candidate_workspace:
             self.patch_validator.apply(candidate_workspace, patch)
             candidate = self.benchmark_runner.run(candidate_workspace, plan, "candidate")
 
@@ -337,33 +367,6 @@ class PatchVerifier:
                 if (source / path).is_file():
                     protected.append(path.as_posix())
         return protected
-
-    @contextmanager
-    def _isolated_copy(self, source: Path) -> Iterator[Path]:
-        with tempfile.TemporaryDirectory(prefix="autoharness-") as temporary:
-            workspace = Path(temporary) / "workspace"
-            shutil.copytree(source, workspace, ignore=self._copy_ignore, symlinks=True)
-            yield workspace
-
-    @staticmethod
-    def _copy_ignore(directory: str, names: list[str]) -> set[str]:
-        excluded_names = {
-            ".git",
-            ".mypy_cache",
-            ".pytest_cache",
-            ".ruff_cache",
-            ".uv-cache",
-            ".uv-python",
-            ".venv",
-            "__pycache__",
-            "build",
-            "dist",
-            "node_modules",
-        }
-        ignored = {name for name in names if name in excluded_names}
-        base = Path(directory)
-        ignored.update(name for name in names if (base / name).is_symlink())
-        return ignored
 
 
 class PatchPromoter:

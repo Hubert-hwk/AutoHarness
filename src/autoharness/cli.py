@@ -9,11 +9,13 @@ from typing import Annotated
 import typer
 
 from autoharness.code_graph import PythonCodeGraph
+from autoharness.generation import CommandPatchGenerator, PatchGenerationError
 from autoharness.ledger import LedgerError, RepairLedger
 from autoharness.models import (
     AgentTrace,
     CandidateStatus,
     EvaluationRequest,
+    PatchGeneratorConfig,
     PatchVerificationPlan,
     RepairExperience,
 )
@@ -255,6 +257,53 @@ def recommend_skills(
         typer.echo(f"Skill recommendation failed: {exc}", err=True)
         raise typer.Exit(code=3) from exc
     typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("autofix")
+def autofix(
+    trace_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    generator_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    plan_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    repo: Annotated[
+        Path, typer.Option("--repo", exists=True, file_okay=False, readable=True)
+    ] = Path("."),
+    ledger: Annotated[Path | None, typer.Option("--ledger")] = None,
+    skills: Annotated[Path | None, typer.Option("--skills")] = None,
+    skill_limit: Annotated[int, typer.Option("--skill-limit", min=1, max=50)] = 5,
+    allow_command_execution: Annotated[bool, typer.Option("--allow-command-execution")] = False,
+    apply_to_source: Annotated[bool, typer.Option("--apply-to-source")] = False,
+) -> None:
+    """Diagnose, retrieve experience, generate, verify, and optionally learn a repair."""
+    if not allow_command_execution:
+        typer.echo(
+            "Refusing to execute generator and benchmark commands without "
+            "--allow-command-execution",
+            err=True,
+        )
+        raise typer.Exit(code=4)
+    source = repo.expanduser().resolve()
+    ledger_path = ledger or source / ".autoharness" / "ledger.db"
+    skill_directory = skills or source / ".autoharness" / "skills"
+    try:
+        trace = AgentTrace.model_validate(_load_json(trace_file))
+        generator_config = PatchGeneratorConfig.model_validate(_load_json(generator_file))
+        verification_plan = PatchVerificationPlan.model_validate(_load_json(plan_file))
+        result = AutoHarness().autofix(
+            trace,
+            source,
+            CommandPatchGenerator(generator_config),
+            verification_plan,
+            ledger_path=ledger_path,
+            skill_directory=skill_directory,
+            promote=apply_to_source,
+            skill_limit=skill_limit,
+        )
+    except (LedgerError, OSError, PatchGenerationError, VerificationError) as exc:
+        typer.echo(f"Autofix failed: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    typer.echo(result.model_dump_json(indent=2))
+    if result.evolution.candidate.status == CandidateStatus.REJECTED:
+        raise typer.Exit(code=2)
 
 
 @app.command()

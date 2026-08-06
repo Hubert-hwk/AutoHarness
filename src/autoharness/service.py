@@ -4,28 +4,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from autoharness.autofix import AutoFixPipeline
 from autoharness.code_graph import PythonCodeGraph
 from autoharness.diagnosis import FailureDiagnoser
 from autoharness.evaluation import EvaluationGate
 from autoharness.evolution import EvolutionPipeline
+from autoharness.generation import PatchGenerator
 from autoharness.ledger import RepairLedger
 from autoharness.models import (
     AgentTrace,
     AnalysisResult,
+    AutoFixPipelineResult,
     EvaluationPolicy,
     EvaluationResult,
     EvaluationSnapshot,
     EvolutionPipelineResult,
-    FailureType,
     PatchVerificationPlan,
     PatchVerificationResult,
     RepairExperience,
     RepairPipelineResult,
     Skill,
-    SkillQuery,
     SkillRecommendationResult,
 )
-from autoharness.registry import SkillRegistry
+from autoharness.registry import SkillRecommender
 from autoharness.skills import SkillGenerator
 from autoharness.verification import PatchVerifier, RepairPipeline
 
@@ -37,6 +38,7 @@ class AutoHarness:
         self.skill_generator = SkillGenerator()
         self.patch_verifier = PatchVerifier()
         self.repair_pipeline = RepairPipeline()
+        self.skill_recommender = SkillRecommender()
 
     def analyze(
         self,
@@ -111,43 +113,35 @@ class AutoHarness:
         limit: int = 5,
         same_failure_only: bool = True,
     ) -> SkillRecommendationResult:
-        diagnosis = self.diagnoser.diagnose(trace)
-        locations = []
-        if repository_path is not None:
-            graph = PythonCodeGraph(repository_path)
-            graph.build()
-            locations = graph.locate(diagnosis, limit=8)
-        text = " ".join(
-            [
-                trace.task,
-                *trace.logs,
-                trace.feedback or "",
-                diagnosis.summary,
-                *diagnosis.likely_causes,
-                *diagnosis.search_terms,
-                *(evidence.excerpt for evidence in diagnosis.evidence),
-            ]
+        return self.skill_recommender.recommend(
+            trace,
+            skill_directory,
+            repository_path=repository_path,
+            limit=limit,
+            same_failure_only=same_failure_only,
         )
-        components = list(
-            dict.fromkeys(
-                value
-                for location in locations
-                for value in (location.symbol, Path(location.path).stem)
-            )
+
+    def autofix(
+        self,
+        trace: AgentTrace,
+        repository: str | Path,
+        generator: PatchGenerator,
+        verification_plan: PatchVerificationPlan,
+        *,
+        ledger_path: str | Path,
+        skill_directory: str | Path,
+        promote: bool = False,
+        skill_limit: int = 5,
+    ) -> AutoFixPipelineResult:
+        pipeline = AutoFixPipeline(
+            generator,
+            RepairLedger(ledger_path),
+            skill_directory,
         )
-        skills = SkillRegistry(skill_directory).search(
-            SkillQuery(
-                failure_type=diagnosis.failure_type,
-                text=text,
-                components=components,
-                limit=limit,
-                same_failure_only=(
-                    same_failure_only and diagnosis.failure_type != FailureType.UNKNOWN
-                ),
-            )
-        )
-        return SkillRecommendationResult(
-            diagnosis=diagnosis,
-            code_locations=locations,
-            skills=skills,
+        return pipeline.run(
+            trace,
+            repository,
+            verification_plan,
+            promote=promote,
+            skill_limit=skill_limit,
         )

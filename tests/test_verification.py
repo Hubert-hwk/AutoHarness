@@ -70,6 +70,16 @@ def test_patch_verifier_accepts_improvement_without_mutating_source(tmp_path: Pa
     assert result.attestation.source_files[0].existed
 
 
+def test_patch_verifier_accepts_lf_diff_for_crlf_source(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    (repository / "value.txt").write_bytes(b"1\r\n")
+
+    result = PatchVerifier().verify(repository, _patch(2), _plan())
+
+    assert result.accepted
+    assert (repository / "value.txt").read_bytes() == b"1\r\n"
+
+
 def test_patch_verifier_rejects_regression(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
 

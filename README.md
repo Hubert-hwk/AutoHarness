@@ -23,19 +23,22 @@ pipeline that work locally without requiring an LLM or external service.
 - Non-destructive patch verification in separate disposable baseline and candidate copies.
 - Guarded source promotion, persistent repair history, and versioned skill evolution.
 - Explainable retrieval over the latest learned Skill versions for future failures.
+- Pluggable patch generation through an isolated, JSON-in/unified-diff-out command protocol.
+- End-to-end AutoFix orchestration from diagnosis and Skill retrieval through verification,
+  optional promotion, and learning.
 - CLI and FastAPI interfaces backed by the same application service.
 
 ```text
 Trace / logs / feedback
           |
           v
-  Failure diagnosis -----> repair checks
+  Failure diagnosis -----> Skill retrieval
           |
           v
-  Python code graph -----> candidate files and symbols
+  Python code graph -----> patch generator
           |
           v
-  verified repair -------> guarded promotion
+  evaluation gates ------> guarded promotion
           |                        |
           v                        v
   repair ledger <--------- versioned skill
@@ -163,6 +166,45 @@ YAML is reported without hiding valid Skills, and older versions are ignored whi
 on disk for auditability. Use `--cross-failure` to explicitly allow experience from other
 failure categories; unknown diagnoses automatically fall back to cross-category retrieval.
 
+Generate and verify a repair directly from a failing trace:
+
+```bash
+autoharness autofix TRACE.json GENERATOR.json PLAN.json \
+  --repo PATH \
+  --allow-command-execution
+```
+
+AutoFix diagnoses the trace, retrieves relevant learned Skills, builds a typed generation
+context, runs the configured generator in a disposable repository copy, and verifies its
+unified diff against the baseline. The safe default does not modify the source checkout.
+Add `--apply-to-source` to promote an accepted patch and learn a versioned Skill:
+
+```bash
+autoharness autofix TRACE.json GENERATOR.json PLAN.json \
+  --repo PATH \
+  --allow-command-execution \
+  --apply-to-source
+```
+
+The generator configuration is JSON. `argv` is executed directly without a shell, receives
+the generation context as JSON on standard input, writes one UTF-8 unified diff to standard
+output, and may write diagnostics to standard error:
+
+```json
+{
+  "name": "local-generator",
+  "argv": ["python", "generator.py"],
+  "timeout_seconds": 120,
+  "max_patch_bytes": 1048576
+}
+```
+
+Generator commands are trusted local processes, not an operating-system sandbox. AutoHarness
+protects the generator program from modifying itself, rejects malformed, binary, oversized,
+or unsafe patches, and never executes a generated shell command. See
+[`examples/verification_target/generator.json`](examples/verification_target/generator.json)
+for a minimal provider.
+
 See [`examples/repair_experience.json`](examples/repair_experience.json) for the expected
 repair format.
 
@@ -191,6 +233,8 @@ To include code localization, wrap the trace in an analysis request:
 - `code_graph.py` builds and queries a lightweight Python code graph.
 - `evaluation.py` enforces tests, metric thresholds, and regression budgets.
 - `verification.py` validates patches and runs isolated before/after benchmarks.
+- `generation.py` defines the provider protocol and isolated command generator.
+- `autofix.py` orchestrates Diagnose -> Retrieve -> Generate -> Verify -> Promote -> Learn.
 - `RepairPipeline` promotes accepted candidates with stale-source detection and backups.
 - `ledger.py` persists the repair state machine and append-only lifecycle events in SQLite.
 - `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
@@ -199,8 +243,8 @@ To include code localization, wrap the trace in an analysis request:
 - `service.py` orchestrates the Observe -> Diagnose -> Repair -> Evaluate -> Learn workflow.
 - `api.py` and `cli.py` are transport adapters.
 
-The deterministic core is intentional: it provides a measurable baseline before adding an
-LLM diagnosis provider. Future phases will add patch generation in an isolated workspace,
+The deterministic core is intentional: it provides a measurable baseline while keeping
+generation providers replaceable. Future phases will add model-backed provider adapters,
 persistent trace storage, and feedback-driven harness optimization.
 
 ## Development
@@ -227,10 +271,10 @@ uv run pytest
 
 - **Phase 1 - Agent Debug Copilot:** trace ingestion, diagnosis, and code localization.
 - **Phase 2 - AutoFix Agent:** evaluation, verification, guarded promotion, and repair
-  history are available; patch generation and richer benchmark adapters are next.
+  history plus pluggable isolated patch generation are available; model-backed providers and
+  richer benchmark adapters are next.
 - **Phase 3 - Self-Evolving Harness:** versioned repair Skills and explainable retrieval are
-  available; patch generation, harness optimization, and outcome-aware experience selection
-  are next.
+  available; harness optimization and outcome-aware experience selection are next.
 
 ## License
 

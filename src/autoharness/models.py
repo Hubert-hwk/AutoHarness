@@ -377,3 +377,47 @@ class SkillRecommendationResult(BaseModel):
     diagnosis: FailureDiagnosis
     code_locations: list[CodeLocation] = Field(default_factory=list)
     skills: SkillSearchResult
+
+
+class PatchGeneratorConfig(BaseModel):
+    name: str = "command"
+    argv: list[str] = Field(min_length=1)
+    timeout_seconds: float = Field(default=300, gt=0, le=3600)
+    env: dict[str, str] = Field(default_factory=dict)
+    max_patch_bytes: int = Field(default=2 * 1024 * 1024, ge=1, le=2 * 1024 * 1024)
+
+    @field_validator("name")
+    @classmethod
+    def generator_name_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("generator name must not be blank")
+        return value.strip()
+
+    @field_validator("argv")
+    @classmethod
+    def generator_arguments_must_not_be_blank(cls, value: list[str]) -> list[str]:
+        if any(not argument for argument in value):
+            raise ValueError("generator arguments must not be blank")
+        return value
+
+
+class PatchGenerationContext(BaseModel):
+    trace: AgentTrace
+    diagnosis: FailureDiagnosis
+    code_locations: list[CodeLocation] = Field(default_factory=list)
+    skill_matches: list[SkillMatch] = Field(default_factory=list)
+
+
+class GeneratedPatch(BaseModel):
+    provider: str
+    patch: str
+    patch_sha256: str
+    duration_ms: float = Field(ge=0)
+    stderr_tail: str = ""
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class AutoFixPipelineResult(BaseModel):
+    recommendation: SkillRecommendationResult
+    generated_patch: GeneratedPatch
+    evolution: EvolutionPipelineResult
