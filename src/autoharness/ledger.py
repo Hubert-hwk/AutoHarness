@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -842,6 +843,14 @@ class RepairLedger:
             control_posterior = (counts["control_accepted"] + 2) / (control_observations + 4)
             control_confidence = control_observations / (control_observations + 5)
             estimated_lift = posterior - control_posterior
+            exposed_variance = self._beta_posterior_variance(counts["accepted"], observations)
+            control_variance = self._beta_posterior_variance(
+                counts["control_accepted"], control_observations
+            )
+            lift_standard_error = math.sqrt(exposed_variance + control_variance)
+            lift_margin = 1.96 * lift_standard_error
+            lift_lower_bound = max(-1.0, estimated_lift - lift_margin)
+            lift_upper_bound = min(1.0, estimated_lift + lift_margin)
             ablation_confidence = min(confidence, control_confidence)
             ablation_adjustment = max(-1.0, min(1.0, estimated_lift * 2 * ablation_confidence))
             associative_adjustment = (posterior - 0.5) * 4 * confidence
@@ -864,10 +873,20 @@ class RepairLedger:
                 control_unevaluated_failures=counts["control_unevaluated_failures"],
                 control_posterior_success_rate=round(control_posterior, 4),
                 estimated_lift=round(estimated_lift, 4),
+                estimated_lift_standard_error=round(lift_standard_error, 4),
+                estimated_lift_lower_bound=round(lift_lower_bound, 4),
+                estimated_lift_upper_bound=round(lift_upper_bound, 4),
                 ablation_confidence=round(ablation_confidence, 4),
                 ablation_score_adjustment=round(ablation_adjustment, 3),
             )
         return results
+
+    @staticmethod
+    def _beta_posterior_variance(accepted: int, observations: int) -> float:
+        alpha = accepted + 2
+        beta = observations - accepted + 2
+        total = alpha + beta
+        return (alpha * beta) / (total * total * (total + 1))
 
     @staticmethod
     def _outcome_category(status: CandidateStatus, metadata: dict[str, Any]) -> str:

@@ -613,6 +613,7 @@ def test_recommend_skills_cli_quarantines_and_explicitly_includes_unhealthy_skil
     assert quarantined_payload["matches"] == []
     assert quarantined_payload["quarantined_skills"][0]["skill_name"] == "harmful_repair"
     assert quarantined_payload["quarantined_skills"][0]["status"] == "quarantined"
+    assert quarantined_payload["quarantined_skills"][0]["decision_basis"] == "associative_rate"
     assert included.exit_code == 0
     included_match = json.loads(included.output)["skills"]["matches"][0]
     assert included_match["skill"]["name"] == "harmful_repair"

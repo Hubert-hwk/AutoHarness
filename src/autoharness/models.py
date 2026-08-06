@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class EventKind(StrEnum):
@@ -78,6 +78,14 @@ class SkillHealthStatus(StrEnum):
     LEARNING = "learning"
     HEALTHY = "healthy"
     QUARANTINED = "quarantined"
+
+
+class SkillHealthBasis(StrEnum):
+    NO_EVIDENCE = "no_evidence"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    ASSOCIATIVE_RATE = "associative_rate"
+    CONTROLLED_HARM = "controlled_harm"
+    CONTROLLED_BENEFIT = "controlled_benefit"
 
 
 class TraceEvent(BaseModel):
@@ -406,8 +414,21 @@ class SkillOutcomeStats(BaseModel):
     control_unevaluated_failures: int = Field(default=0, ge=0)
     control_posterior_success_rate: float = Field(default=0.5, ge=0, le=1)
     estimated_lift: float = Field(default=0, ge=-1, le=1)
+    estimated_lift_standard_error: float = Field(default=0, ge=0, le=1)
+    estimated_lift_lower_bound: float = Field(default=-1, ge=-1, le=1)
+    estimated_lift_upper_bound: float = Field(default=1, ge=-1, le=1)
     ablation_confidence: float = Field(default=0, ge=0, le=1)
     ablation_score_adjustment: float = Field(default=0, ge=-1, le=1)
+
+    @model_validator(mode="after")
+    def validate_lift_interval(self) -> Self:
+        if not (
+            self.estimated_lift_lower_bound
+            <= self.estimated_lift
+            <= self.estimated_lift_upper_bound
+        ):
+            raise ValueError("estimated lift must be contained in its uncertainty interval")
+        return self
 
 
 class SkillHealth(BaseModel):
@@ -418,6 +439,13 @@ class SkillHealth(BaseModel):
     posterior_success_rate: float = Field(ge=0, le=1)
     minimum_observations: int = Field(ge=1)
     quarantine_threshold: float = Field(ge=0, le=1)
+    controlled_minimum_observations: int = Field(default=5, ge=1)
+    controlled_effect_margin: float = Field(default=0.05, ge=0, le=1)
+    decision_basis: SkillHealthBasis = SkillHealthBasis.ASSOCIATIVE_RATE
+    control_observations: int = Field(default=0, ge=0)
+    estimated_lift: float = Field(default=0, ge=-1, le=1)
+    estimated_lift_lower_bound: float = Field(default=-1, ge=-1, le=1)
+    estimated_lift_upper_bound: float = Field(default=1, ge=-1, le=1)
     reason: str
 
 

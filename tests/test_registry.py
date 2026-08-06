@@ -6,6 +6,7 @@ import yaml
 from autoharness.models import (
     FailureType,
     Skill,
+    SkillHealthBasis,
     SkillHealthStatus,
     SkillOutcomeStats,
     SkillQuery,
@@ -201,6 +202,7 @@ def test_new_skill_version_resets_quarantine_history(tmp_path: Path) -> None:
 
     assert result.matches[0].skill.version == 2
     assert result.matches[0].health.status == SkillHealthStatus.UNOBSERVED
+    assert result.matches[0].health.decision_basis == SkillHealthBasis.NO_EVIDENCE
     assert result.quarantined_skills == []
 
 
@@ -238,8 +240,126 @@ def test_registry_explains_and_applies_controlled_ablation_score(tmp_path: Path)
     )
 
     assert [match.skill.name for match in result.matches] == ["z_beneficial", "a_harmful"]
+    assert result.matches[0].health.decision_basis == SkillHealthBasis.INSUFFICIENT_EVIDENCE
     assert any("controlled ablation" in reason for reason in result.matches[0].reasons)
     assert any("estimated lift +0.125" in reason for reason in result.matches[0].reasons)
+
+
+def test_registry_uses_uncertainty_aware_controlled_health_decisions(tmp_path: Path) -> None:
+    for name in ("controlled_harm", "controlled_benefit"):
+        SkillGenerator().save(_skill(name), tmp_path)
+    harmful = SkillOutcomeStats(
+        skill_name="controlled_harm",
+        skill_version=1,
+        observations=100,
+        accepted=80,
+        rejected=20,
+        unevaluated_failures=0,
+        post_acceptance_failures=0,
+        posterior_success_rate=0.7885,
+        confidence=0.9524,
+        score_adjustment=0.733,
+        control_observations=100,
+        control_accepted=100,
+        control_rejected=0,
+        control_posterior_success_rate=0.9808,
+        estimated_lift=-0.1923,
+        estimated_lift_standard_error=0.042,
+        estimated_lift_lower_bound=-0.2747,
+        estimated_lift_upper_bound=-0.1099,
+        ablation_confidence=0.9524,
+        ablation_score_adjustment=-0.366,
+    )
+    beneficial = SkillOutcomeStats(
+        skill_name="controlled_benefit",
+        skill_version=1,
+        observations=200,
+        accepted=20,
+        rejected=180,
+        unevaluated_failures=0,
+        post_acceptance_failures=0,
+        posterior_success_rate=0.1078,
+        confidence=0.9756,
+        score_adjustment=-1.339,
+        control_observations=200,
+        control_accepted=0,
+        control_rejected=200,
+        control_posterior_success_rate=0.0098,
+        estimated_lift=0.098,
+        estimated_lift_standard_error=0.0227,
+        estimated_lift_lower_bound=0.0535,
+        estimated_lift_upper_bound=0.1426,
+        ablation_confidence=0.9756,
+        ablation_score_adjustment=0.191,
+    )
+
+    result = SkillRegistry(
+        tmp_path,
+        {
+            ("controlled_harm", 1): harmful,
+            ("controlled_benefit", 1): beneficial,
+        },
+    ).search(SkillQuery(text="incorrect answer with low score", limit=2))
+
+    assert [match.skill.name for match in result.matches] == ["controlled_benefit"]
+    benefit_health = result.matches[0].health
+    assert benefit_health is not None
+    assert benefit_health.status == SkillHealthStatus.HEALTHY
+    assert benefit_health.decision_basis == SkillHealthBasis.CONTROLLED_BENEFIT
+    assert benefit_health.controlled_minimum_observations == 5
+    assert benefit_health.controlled_effect_margin == 0.05
+    assert result.quarantined_skills[0].skill_name == "controlled_harm"
+    assert result.quarantined_skills[0].decision_basis == SkillHealthBasis.CONTROLLED_HARM
+    assert "95% controlled lift interval" in result.quarantined_skills[0].reason
+
+
+def test_controlled_harm_quarantine_recovers_when_interval_becomes_inconclusive() -> None:
+    recovered = SkillOutcomeStats(
+        skill_name="controlled_harm",
+        skill_version=1,
+        observations=120,
+        accepted=110,
+        rejected=10,
+        unevaluated_failures=0,
+        post_acceptance_failures=0,
+        posterior_success_rate=0.9032,
+        confidence=0.96,
+        score_adjustment=1,
+        control_observations=100,
+        control_accepted=100,
+        control_rejected=0,
+        control_posterior_success_rate=0.9808,
+        estimated_lift=-0.0775,
+        estimated_lift_standard_error=0.0296,
+        estimated_lift_lower_bound=-0.1357,
+        estimated_lift_upper_bound=-0.0194,
+        ablation_confidence=0.9524,
+        ablation_score_adjustment=-0.148,
+    )
+
+    health = SkillRegistry._health(_skill("controlled_harm"), recovered)
+
+    assert health.status == SkillHealthStatus.HEALTHY
+    assert health.decision_basis == SkillHealthBasis.ASSOCIATIVE_RATE
+
+
+def test_skill_outcome_rejects_inconsistent_lift_interval() -> None:
+    with pytest.raises(ValueError, match="must be contained"):
+        SkillOutcomeStats(
+            skill_name="invalid_interval",
+            skill_version=1,
+            observations=1,
+            accepted=1,
+            rejected=0,
+            unevaluated_failures=0,
+            post_acceptance_failures=0,
+            posterior_success_rate=0.6,
+            confidence=1 / 6,
+            score_adjustment=0.1,
+            estimated_lift=0.5,
+            estimated_lift_lower_bound=-0.2,
+            estimated_lift_upper_bound=0.2,
+        )
 
 
 def test_registry_rotates_controlled_probes_across_quarantined_skills(tmp_path: Path) -> None:

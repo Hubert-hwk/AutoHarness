@@ -480,6 +480,20 @@ class AutoFixPipeline:
                     "path": match.path,
                     "score": match.score,
                     "health": match.health.status.value if match.health is not None else None,
+                    "health_basis": (
+                        match.health.decision_basis.value if match.health is not None else None
+                    ),
+                    "estimated_lift": (
+                        match.health.estimated_lift if match.health is not None else None
+                    ),
+                    "estimated_lift_interval": (
+                        [
+                            match.health.estimated_lift_lower_bound,
+                            match.health.estimated_lift_upper_bound,
+                        ]
+                        if match.health is not None
+                        else None
+                    ),
                     "quarantine_probe": match.quarantine_probe,
                 }
                 for match in recommendation.skills.matches
@@ -492,6 +506,20 @@ class AutoFixPipeline:
                     "original_rank": item.original_rank,
                     "experiment_index": item.experiment_index,
                     "health": item.health.status.value if item.health is not None else None,
+                    "health_basis": (
+                        item.health.decision_basis.value if item.health is not None else None
+                    ),
+                    "estimated_lift": (
+                        item.health.estimated_lift if item.health is not None else None
+                    ),
+                    "estimated_lift_interval": (
+                        [
+                            item.health.estimated_lift_lower_bound,
+                            item.health.estimated_lift_upper_bound,
+                        ]
+                        if item.health is not None
+                        else None
+                    ),
                     "reason": item.reason,
                 }
                 for item in recommendation.withheld_skills

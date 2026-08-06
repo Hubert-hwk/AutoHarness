@@ -749,6 +749,9 @@ def test_autofix_quarantines_harmful_skill_and_recovers_it_through_probes(
     assert first_match.health.status == SkillHealthStatus.QUARANTINED
     retrieved = first_probe.evolution.candidate.metadata["retrieved_skills"][0]
     assert retrieved["health"] == SkillHealthStatus.QUARANTINED.value
+    assert retrieved["health_basis"] == "associative_rate"
+    assert retrieved["estimated_lift_interval"][0] < retrieved["estimated_lift"]
+    assert retrieved["estimated_lift_interval"][1] > 0
     assert retrieved["quarantine_probe"] is True
     after_first_probe = ledger.skill_outcomes(repository_path=repository)[
         ("historical_score_repair", 1)

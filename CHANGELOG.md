@@ -2,6 +2,21 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.17.0 - 2026-08-07
+
+- Compute an approximate 95% uncertainty interval for exposed-versus-control Beta posterior lift.
+- Quarantine Skills when sufficiently sampled controlled evidence supports a harmful effect even
+  when their absolute success rate appears healthy.
+- Preserve Skills when sufficiently sampled controlled evidence supports a beneficial effect even
+  when their absolute success rate is low.
+- Fall back to the existing conservative absolute-success gate when controls are missing or the
+  controlled interval is inconclusive.
+- Add typed no-evidence, insufficient-evidence, associative, controlled-harm, and
+  controlled-benefit health decision bases.
+- Persist health basis and lift intervals with exposed and withheld candidate metadata.
+- Validate lift-interval consistency and cover harmful, beneficial, recovery, provenance, and
+  posterior-bound behavior.
+
 ## 0.16.0 - 2026-08-07
 
 - Scope exposed and controlled Skill outcomes to the diagnosed failure type used for retrieval.

@@ -17,6 +17,7 @@ from autoharness.models import (
     FailureType,
     Skill,
     SkillHealth,
+    SkillHealthBasis,
     SkillHealthStatus,
     SkillLoadIssue,
     SkillMatch,
@@ -38,6 +39,8 @@ class SkillRegistry:
     max_skill_files = 5000
     quarantine_minimum_observations = 5
     quarantine_posterior_threshold = 0.3
+    controlled_minimum_observations = 5
+    controlled_effect_margin = 0.05
 
     def __init__(
         self,
@@ -218,7 +221,9 @@ class SkillRegistry:
                     "controlled ablation: "
                     f"{outcome.control_observations} controls, control Bayesian rate "
                     f"{outcome.control_posterior_success_rate:.3f}, estimated lift "
-                    f"{outcome.estimated_lift:+.3f}, confidence "
+                    f"{outcome.estimated_lift:+.3f}, approximate 95% interval "
+                    f"[{outcome.estimated_lift_lower_bound:+.3f}, "
+                    f"{outcome.estimated_lift_upper_bound:+.3f}], confidence "
                     f"{outcome.ablation_confidence:.3f}, score "
                     f"{ablation_direction}{outcome.ablation_score_adjustment:.3f}"
                 )
@@ -244,16 +249,47 @@ class SkillRegistry:
                 posterior_success_rate=0.5,
                 minimum_observations=cls.quarantine_minimum_observations,
                 quarantine_threshold=cls.quarantine_posterior_threshold,
+                controlled_minimum_observations=cls.controlled_minimum_observations,
+                controlled_effect_margin=cls.controlled_effect_margin,
+                decision_basis=SkillHealthBasis.NO_EVIDENCE,
                 reason="no repository-scoped outcome evidence yet",
             )
         if outcome.observations < cls.quarantine_minimum_observations:
             status = SkillHealthStatus.LEARNING
+            basis = SkillHealthBasis.INSUFFICIENT_EVIDENCE
             reason = (
                 f"{outcome.observations}/{cls.quarantine_minimum_observations} observations "
                 "collected before health gating"
             )
+        elif (
+            outcome.control_observations >= cls.controlled_minimum_observations
+            and outcome.estimated_lift_upper_bound <= -cls.controlled_effect_margin
+        ):
+            status = SkillHealthStatus.QUARANTINED
+            basis = SkillHealthBasis.CONTROLLED_HARM
+            reason = (
+                "approximate 95% controlled lift interval "
+                f"[{outcome.estimated_lift_lower_bound:+.3f}, "
+                f"{outcome.estimated_lift_upper_bound:+.3f}] is at or below "
+                f"-{cls.controlled_effect_margin:.3f} after {outcome.observations} exposed and "
+                f"{outcome.control_observations} control observations"
+            )
+        elif (
+            outcome.control_observations >= cls.controlled_minimum_observations
+            and outcome.estimated_lift_lower_bound >= cls.controlled_effect_margin
+        ):
+            status = SkillHealthStatus.HEALTHY
+            basis = SkillHealthBasis.CONTROLLED_BENEFIT
+            reason = (
+                "approximate 95% controlled lift interval "
+                f"[{outcome.estimated_lift_lower_bound:+.3f}, "
+                f"{outcome.estimated_lift_upper_bound:+.3f}] is at or above "
+                f"+{cls.controlled_effect_margin:.3f} after {outcome.observations} exposed and "
+                f"{outcome.control_observations} control observations"
+            )
         elif outcome.posterior_success_rate <= cls.quarantine_posterior_threshold:
             status = SkillHealthStatus.QUARANTINED
+            basis = SkillHealthBasis.ASSOCIATIVE_RATE
             reason = (
                 f"Bayesian success rate {outcome.posterior_success_rate:.3f} is at or below "
                 f"{cls.quarantine_posterior_threshold:.3f} after "
@@ -261,6 +297,7 @@ class SkillRegistry:
             )
         else:
             status = SkillHealthStatus.HEALTHY
+            basis = SkillHealthBasis.ASSOCIATIVE_RATE
             reason = (
                 f"Bayesian success rate {outcome.posterior_success_rate:.3f} remains above "
                 f"{cls.quarantine_posterior_threshold:.3f} after "
@@ -274,6 +311,13 @@ class SkillRegistry:
             posterior_success_rate=outcome.posterior_success_rate,
             minimum_observations=cls.quarantine_minimum_observations,
             quarantine_threshold=cls.quarantine_posterior_threshold,
+            controlled_minimum_observations=cls.controlled_minimum_observations,
+            controlled_effect_margin=cls.controlled_effect_margin,
+            decision_basis=basis,
+            control_observations=outcome.control_observations,
+            estimated_lift=outcome.estimated_lift,
+            estimated_lift_lower_bound=outcome.estimated_lift_lower_bound,
+            estimated_lift_upper_bound=outcome.estimated_lift_upper_bound,
             reason=reason,
         )
 

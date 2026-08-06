@@ -29,6 +29,7 @@ from autoharness.models import (
     RepairPipelineResult,
     SkillAblation,
     SkillHealth,
+    SkillHealthBasis,
     SkillHealthStatus,
     SkillOutcomeStats,
     SkillRecommendationResult,
@@ -63,8 +64,9 @@ __all__ = [
     "RepairPipelineResult",
     "SkillAblation",
     "SkillHealth",
+    "SkillHealthBasis",
     "SkillHealthStatus",
     "SkillRecommendationResult",
     "SkillOutcomeStats",
 ]
-__version__ = "0.16.0"
+__version__ = "0.17.0"

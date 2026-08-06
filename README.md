@@ -31,6 +31,8 @@ pipeline that work locally without requiring an LLM or external service.
   estimates whether retrieved experience improves repairs.
 - Failure-type-isolated Skill learning so evidence from one diagnosed repair context does not
   silently alter ranking or health in another context.
+- Uncertainty-aware Skill health decisions that can quarantine statistically supported controlled
+  harm and preserve statistically supported controlled benefit.
 - Pluggable patch generation through an isolated command protocol or the built-in OpenAI
   Responses API provider.
 - Explainable adaptive generator portfolios that learn from repository-scoped run outcomes,
@@ -209,12 +211,17 @@ retrieval repair. `recommend-skills` applies the same isolation whenever a ledge
 Unknown diagnoses intentionally use global evidence because their retrieval falls back across
 failure categories. Omitting `--failure-type` preserves the backward-compatible global view.
 
-Every relevant Skill also receives an explainable health state. New Skills are `unobserved`; Skills
-with fewer than five repository-scoped observations remain `learning`. At five or more observations,
-a Beta posterior success rate at or below 0.30 moves the Skill to `quarantined`; otherwise it is
-`healthy`. Quarantined Skills are removed from generator context but remain in
-`quarantined_skills` audit output with counts, thresholds, and reasons. This gate is intentionally
-conservative and continues to use associative evidence rather than claiming causal attribution.
+Every relevant Skill also receives an explainable health state and decision basis. New Skills are
+`unobserved`; Skills with fewer than five exposed repository-scoped observations remain `learning`.
+When both exposed and control arms have at least five observations, AutoHarness approximates a 95%
+interval for the difference between their independent Beta(2,2) posteriors. An interval entirely at
+or below `-0.05` quarantines the Skill as `controlled_harm`; an interval entirely at or above
+`+0.05` keeps it healthy as `controlled_benefit`. Inconclusive or unavailable controls fall back to
+the existing absolute rule: an exposed posterior at or below 0.30 after five observations is
+quarantined. Quarantined Skills are removed from generator context but remain in
+`quarantined_skills` output with counts, interval, decision basis, thresholds, and reasons.
+Candidate metadata preserves the same basis and lift interval. These conservative approximations
+reduce false causal decisions but do not eliminate confounding.
 
 Inspect quarantined matches manually when needed:
 
@@ -497,7 +504,7 @@ To include code localization, wrap the trace in an analysis request:
 - `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
 - `skills.py` converts validated repairs into portable YAML skills.
 - `registry.py` safely indexes and ranks the latest learned Skill versions with conservative,
-  explainable exposed/control adjustments, recoverable quarantine gates, and rotating probes.
+  explainable exposed/control adjustments, uncertainty-aware health gates, and rotating probes.
 - `service.py` orchestrates the Observe -> Diagnose -> Repair -> Evaluate -> Learn workflow.
 - `api.py` and `cli.py` are transport adapters.
 
@@ -537,8 +544,8 @@ uv run pytest
   auditable exploration, attempt-aware failover attribution, and failure-type-specialized
   selection. Skill health closes the outcome-to-retrieval feedback loop with quarantine and
   recovery probes, while periodic ablation supplies a cautious controlled lift estimate. Skill
-  outcome learning is now isolated by diagnosed failure type; richer causal designs and harness
-  optimization are next.
+  outcome learning is isolated by diagnosed failure type, and approximate lift intervals now drive
+  conservative controlled health decisions. Paired experiments and harness optimization are next.
 
 ## License
 
