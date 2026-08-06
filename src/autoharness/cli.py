@@ -406,6 +406,15 @@ def autofix(
             help="Probe one quarantined Skill every N repository runs; 0 disables probes.",
         ),
     ] = 10,
+    skill_ablation_interval: Annotated[
+        int,
+        typer.Option(
+            "--skill-ablation-interval",
+            min=0,
+            max=1000,
+            help="Withhold one relevant Skill every N repository runs; 0 disables ablation.",
+        ),
+    ] = 20,
     allow_command_execution: Annotated[bool, typer.Option("--allow-command-execution")] = False,
     allow_network_generation: Annotated[
         bool,
@@ -464,6 +473,7 @@ def autofix(
             skill_limit=skill_limit,
             max_attempts=max_attempts,
             skill_quarantine_probe_interval=skill_quarantine_probe_interval,
+            skill_ablation_interval=skill_ablation_interval,
             persist_trace=persist_trace,
             recover_stale_after_seconds=recover_stale_after_seconds,
         )

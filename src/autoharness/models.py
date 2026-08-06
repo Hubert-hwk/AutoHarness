@@ -391,7 +391,7 @@ class SkillLoadIssue(BaseModel):
 class SkillOutcomeStats(BaseModel):
     skill_name: str
     skill_version: int = Field(ge=1)
-    observations: int = Field(ge=1)
+    observations: int = Field(ge=0)
     accepted: int = Field(ge=0)
     rejected: int = Field(ge=0)
     unevaluated_failures: int = Field(ge=0)
@@ -399,6 +399,14 @@ class SkillOutcomeStats(BaseModel):
     posterior_success_rate: float = Field(ge=0, le=1)
     confidence: float = Field(ge=0, le=1)
     score_adjustment: float = Field(ge=-2, le=2)
+    control_observations: int = Field(default=0, ge=0)
+    control_accepted: int = Field(default=0, ge=0)
+    control_rejected: int = Field(default=0, ge=0)
+    control_unevaluated_failures: int = Field(default=0, ge=0)
+    control_posterior_success_rate: float = Field(default=0.5, ge=0, le=1)
+    estimated_lift: float = Field(default=0, ge=-1, le=1)
+    ablation_confidence: float = Field(default=0, ge=0, le=1)
+    ablation_score_adjustment: float = Field(default=0, ge=-1, le=1)
 
 
 class SkillHealth(BaseModel):
@@ -430,10 +438,21 @@ class SkillSearchResult(BaseModel):
     quarantined_skills: list[SkillHealth] = Field(default_factory=list)
 
 
+class SkillAblation(BaseModel):
+    skill_name: str
+    skill_version: int = Field(ge=1)
+    path: str
+    original_rank: int = Field(ge=1)
+    experiment_index: int = Field(ge=0)
+    health: SkillHealth | None = None
+    reason: str
+
+
 class SkillRecommendationResult(BaseModel):
     diagnosis: FailureDiagnosis
     code_locations: list[CodeLocation] = Field(default_factory=list)
     skills: SkillSearchResult
+    withheld_skills: list[SkillAblation] = Field(default_factory=list)
 
 
 class PatchGeneratorConfig(BaseModel):

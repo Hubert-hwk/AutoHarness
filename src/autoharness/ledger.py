@@ -739,18 +739,18 @@ class RepairLedger:
         repository_path: str | Path | None = None,
         limit: int = 5000,
     ) -> dict[tuple[str, int], SkillOutcomeStats]:
-        """Aggregate observed repair outcomes for retrieved Skill versions.
+        """Aggregate run-deduplicated exposed and controlled Skill outcomes.
 
-        Attribution is intentionally associative rather than causal: every Skill supplied to
-        a candidate receives the candidate outcome. Bayesian shrinkage in the registry keeps
-        this weak evidence from overpowering diagnosis and content relevance.
+        Retrieved Skills provide associative evidence. Periodic holdouts provide a controlled
+        estimate, but concurrent changes can still confound it. Bayesian shrinkage and bounded
+        adjustments keep both signals from overpowering diagnosis and content relevance.
         """
         bounded_limit = max(1, min(limit, 50_000))
         with self._connection() as connection:
             if repository_path is None:
                 rows = connection.execute(
                     """
-                    SELECT status, metadata FROM repair_candidates
+                    SELECT candidate_id, status, metadata FROM repair_candidates
                     ORDER BY updated_at DESC LIMIT ?
                     """,
                     (bounded_limit,),
@@ -759,47 +759,94 @@ class RepairLedger:
                 resolved = str(Path(repository_path).expanduser().resolve())
                 rows = connection.execute(
                     """
-                    SELECT status, metadata FROM repair_candidates
+                    SELECT candidate_id, status, metadata FROM repair_candidates
                     WHERE repository_path = ? ORDER BY updated_at DESC LIMIT ?
                     """,
                     (resolved, bounded_limit),
                 ).fetchall()
 
-        aggregates: dict[tuple[str, int], dict[str, int]] = {}
+        precedence = {"unevaluated_failures": 0, "rejected": 1, "accepted": 2}
+        units: dict[tuple[str, tuple[str, int], str], dict[str, object]] = {}
         for row in rows:
             status = CandidateStatus(row["status"])
             if status == CandidateStatus.PROPOSED:
                 continue
             metadata = self._load_json(row["metadata"])
-            retrieved = metadata.get("retrieved_skills", [])
-            if not isinstance(retrieved, list):
-                continue
             outcome = self._outcome_category(status, metadata)
-            seen: set[tuple[str, int]] = set()
-            for item in retrieved:
-                key = self._skill_key(item)
-                if key is None or key in seen:
+            run_id = metadata.get("autofix_run_id")
+            unit_id = (
+                run_id.strip()
+                if isinstance(run_id, str) and run_id.strip()
+                else row["candidate_id"]
+            )
+            arms = (
+                ("exposed", metadata.get("retrieved_skills", [])),
+                ("control", metadata.get("withheld_skills", [])),
+            )
+            for arm, evidence in arms:
+                if not isinstance(evidence, list):
                     continue
-                seen.add(key)
-                counts = aggregates.setdefault(
-                    key,
-                    {
-                        "accepted": 0,
-                        "rejected": 0,
-                        "unevaluated_failures": 0,
-                        "post_acceptance_failures": 0,
-                    },
-                )
-                counts[outcome] += 1
-                if status == CandidateStatus.FAILED and outcome == "accepted":
-                    counts["post_acceptance_failures"] += 1
+                seen: set[tuple[str, int]] = set()
+                for item in evidence:
+                    key = self._skill_key(item)
+                    if key is None or key in seen:
+                        continue
+                    seen.add(key)
+                    unit_key = (unit_id, key, arm)
+                    existing = units.get(unit_key)
+                    post_acceptance_failure = (
+                        status == CandidateStatus.FAILED and outcome == "accepted"
+                    )
+                    if existing is None:
+                        units[unit_key] = {
+                            "outcome": outcome,
+                            "post_acceptance_failure": post_acceptance_failure,
+                        }
+                    else:
+                        existing_outcome = str(existing["outcome"])
+                        if precedence[outcome] > precedence[existing_outcome]:
+                            existing["outcome"] = outcome
+                        existing["post_acceptance_failure"] = (
+                            bool(existing["post_acceptance_failure"]) or post_acceptance_failure
+                        )
+
+        aggregates: dict[tuple[str, int], dict[str, int]] = {}
+        for (_, key, arm), evidence in units.items():
+            counts = aggregates.setdefault(
+                key,
+                {
+                    "accepted": 0,
+                    "rejected": 0,
+                    "unevaluated_failures": 0,
+                    "post_acceptance_failures": 0,
+                    "control_accepted": 0,
+                    "control_rejected": 0,
+                    "control_unevaluated_failures": 0,
+                },
+            )
+            outcome = str(evidence["outcome"])
+            prefix = "" if arm == "exposed" else "control_"
+            counts[f"{prefix}{outcome}"] += 1
+            if arm == "exposed" and bool(evidence["post_acceptance_failure"]):
+                counts["post_acceptance_failures"] += 1
 
         results: dict[tuple[str, int], SkillOutcomeStats] = {}
         for (name, version), counts in aggregates.items():
             observations = counts["accepted"] + counts["rejected"] + counts["unevaluated_failures"]
+            control_observations = (
+                counts["control_accepted"]
+                + counts["control_rejected"]
+                + counts["control_unevaluated_failures"]
+            )
             posterior = (counts["accepted"] + 2) / (observations + 4)
             confidence = observations / (observations + 5)
-            adjustment = (posterior - 0.5) * 4 * confidence
+            control_posterior = (counts["control_accepted"] + 2) / (control_observations + 4)
+            control_confidence = control_observations / (control_observations + 5)
+            estimated_lift = posterior - control_posterior
+            ablation_confidence = min(confidence, control_confidence)
+            ablation_adjustment = max(-1.0, min(1.0, estimated_lift * 2 * ablation_confidence))
+            associative_adjustment = (posterior - 0.5) * 4 * confidence
+            adjustment = max(-2.0, min(2.0, associative_adjustment + ablation_adjustment))
             results[(name, version)] = SkillOutcomeStats(
                 skill_name=name,
                 skill_version=version,
@@ -811,6 +858,14 @@ class RepairLedger:
                 posterior_success_rate=round(posterior, 4),
                 confidence=round(confidence, 4),
                 score_adjustment=round(adjustment, 3),
+                control_observations=control_observations,
+                control_accepted=counts["control_accepted"],
+                control_rejected=counts["control_rejected"],
+                control_unevaluated_failures=counts["control_unevaluated_failures"],
+                control_posterior_success_rate=round(control_posterior, 4),
+                estimated_lift=round(estimated_lift, 4),
+                ablation_confidence=round(ablation_confidence, 4),
+                ablation_score_adjustment=round(ablation_adjustment, 3),
             )
         return results
 
@@ -842,8 +897,8 @@ class RepairLedger:
     def _skill_key(value: Any) -> tuple[str, int] | None:
         if not isinstance(value, dict):
             return None
-        name = value.get("name")
-        version = value.get("version")
+        name = value.get("name", value.get("skill_name"))
+        version = value.get("version", value.get("skill_version"))
         if not isinstance(name, str) or not name.strip():
             return None
         if not isinstance(version, int) or isinstance(version, bool) or version < 1:

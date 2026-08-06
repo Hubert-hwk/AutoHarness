@@ -2,6 +2,17 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.15.0 - 2026-08-07
+
+- Periodically withhold one relevant non-probe Skill from AutoFix generation context on a
+  configurable, deterministic repository-run cadence.
+- Persist withheld Skill identity, original rank, health, and experiment index for audit.
+- Aggregate exposed and control outcomes once per AutoFix run so retries do not inflate evidence.
+- Compute separate Beta(2,2) posteriors, controlled lift, confidence, and a bounded score adjustment.
+- Explain controlled evidence in Skill ranking while retaining conservative associative scoring.
+- Keep quarantine recovery probes eligible for generation and outside the ablation pool.
+- Add lifecycle, rotation, retry-deduplication, ranking, validation, and CLI coverage.
+
 ## 0.14.0 - 2026-08-07
 
 - Add explainable unobserved, learning, healthy, and quarantined states for retrieved Skills.

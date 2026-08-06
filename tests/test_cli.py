@@ -234,6 +234,8 @@ def test_autofix_cli_runs_full_pipeline(tmp_path: Path) -> None:
             "--allow-command-execution",
             "--skill-probe-interval",
             "0",
+            "--skill-ablation-interval",
+            "0",
             "--apply-to-source",
         ],
     )

@@ -27,6 +27,7 @@ from autoharness.models import (
     PatchVerificationPlan,
     ProviderSelection,
     RepairExperience,
+    SkillAblation,
     SkillRecommendationResult,
 )
 from autoharness.registry import SkillRecommender
@@ -57,6 +58,7 @@ class AutoFixPipeline:
         skill_limit: int = 5,
         max_attempts: int = 3,
         skill_quarantine_probe_interval: int = 10,
+        skill_ablation_interval: int = 20,
         persist_trace: bool = False,
         recover_stale_after_seconds: float | None = None,
     ) -> AutoFixPipelineResult:
@@ -64,6 +66,8 @@ class AutoFixPipeline:
             raise ValueError("max_attempts must be between 1 and 10")
         if not 0 <= skill_quarantine_probe_interval <= 1000:
             raise ValueError("skill_quarantine_probe_interval must be between 0 and 1000")
+        if not 0 <= skill_ablation_interval <= 1000:
+            raise ValueError("skill_ablation_interval must be between 0 and 1000")
         source = Path(repository).expanduser().resolve()
         if recover_stale_after_seconds is not None:
             self.ledger.recover_stale_autofix_runs(
@@ -90,6 +94,7 @@ class AutoFixPipeline:
                 skill_limit=skill_limit,
                 max_attempts=max_attempts,
                 skill_quarantine_probe_interval=skill_quarantine_probe_interval,
+                skill_ablation_interval=skill_ablation_interval,
             )
             status = (
                 AutoFixRunStatus.REJECTED
@@ -124,6 +129,7 @@ class AutoFixPipeline:
         skill_limit: int,
         max_attempts: int,
         skill_quarantine_probe_interval: int,
+        skill_ablation_interval: int,
     ) -> AutoFixPipelineResult:
         run_sequence = self.ledger.autofix_run_count(repository_path=source)
         quarantine_probe_index = None
@@ -140,6 +146,11 @@ class AutoFixPipeline:
             allow_missing_directory=True,
             outcome_stats=self.ledger.skill_outcomes(repository_path=source),
             quarantine_probe_index=quarantine_probe_index,
+        )
+        recommendation = self._apply_skill_ablation(
+            recommendation,
+            run_sequence=run_sequence,
+            interval=skill_ablation_interval,
         )
         failure_type = recommendation.diagnosis.failure_type
         self.ledger.record_autofix_diagnosis(run.run_id, failure_type)
@@ -384,6 +395,52 @@ class AutoFixPipeline:
             )
 
     @staticmethod
+    def _apply_skill_ablation(
+        recommendation: SkillRecommendationResult,
+        *,
+        run_sequence: int,
+        interval: int,
+    ) -> SkillRecommendationResult:
+        if interval == 0 or run_sequence % interval != 0:
+            return recommendation
+        eligible = [
+            (index, match)
+            for index, match in enumerate(recommendation.skills.matches)
+            if not match.quarantine_probe
+        ]
+        if not eligible:
+            return recommendation
+        experiment_index = run_sequence // interval - 1
+        rotation_pool = sorted(
+            eligible,
+            key=lambda item: (item[1].skill.name, item[1].skill.version, item[1].path),
+        )
+        selected_index, selected = rotation_pool[experiment_index % len(rotation_pool)]
+        ablation = SkillAblation(
+            skill_name=selected.skill.name,
+            skill_version=selected.skill.version,
+            path=selected.path,
+            original_rank=selected_index + 1,
+            experiment_index=experiment_index,
+            health=selected.health,
+            reason=(
+                f"Withheld from repository run {run_sequence} as controlled Skill ablation "
+                f"experiment {experiment_index}"
+            ),
+        )
+        remaining = [
+            match
+            for index, match in enumerate(recommendation.skills.matches)
+            if index != selected_index
+        ]
+        return recommendation.model_copy(
+            update={
+                "skills": recommendation.skills.model_copy(update={"matches": remaining}),
+                "withheld_skills": [*recommendation.withheld_skills, ablation],
+            }
+        )
+
+    @staticmethod
     def _bounded_error(error: Exception) -> str:
         return str(error)[-4000:]
 
@@ -418,6 +475,18 @@ class AutoFixPipeline:
                     "quarantine_probe": match.quarantine_probe,
                 }
                 for match in recommendation.skills.matches
+            ],
+            "withheld_skills": [
+                {
+                    "name": item.skill_name,
+                    "version": item.skill_version,
+                    "path": item.path,
+                    "original_rank": item.original_rank,
+                    "experiment_index": item.experiment_index,
+                    "health": item.health.status.value if item.health is not None else None,
+                    "reason": item.reason,
+                }
+                for item in recommendation.withheld_skills
             ],
         }
 

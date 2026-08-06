@@ -27,6 +27,8 @@ pipeline that work locally without requiring an LLM or external service.
   repair history from the current repository.
 - Recoverable Skill health gating that quarantines repeatedly harmful experience and performs
   controlled, rotating re-evaluation probes.
+- Periodic Skill ablation that records run-deduplicated exposed/control outcomes and cautiously
+  estimates whether retrieved experience improves repairs.
 - Pluggable patch generation through an isolated command protocol or the built-in OpenAI
   Responses API provider.
 - Explainable adaptive generator portfolios that learn from repository-scoped run outcomes,
@@ -184,6 +186,19 @@ adjustment to about +/-2 points, so a few correlated observations cannot overpow
 relevance. Every match reports accepted, rejected, and failed counts, posterior rate, score
 adjustment, and textual reasons. This is associative evidence, not a causal claim that a
 retrieved Skill alone produced the result.
+
+AutoFix also withholds one relevant, non-probe Skill every 20 repository runs by default. The
+generator receives the remaining context, while the withheld Skill, original rank, health, and
+experiment index are persisted in candidate metadata. Set `--skill-ablation-interval N` to change
+the cadence or `0` to disable it. Holdouts rotate deterministically across eligible matches and
+never suppress a quarantine recovery probe.
+
+`skill-outcomes` deduplicates retries from the same AutoFix run before aggregating exposed and
+control arms. Each arm uses a Beta(2,2) posterior; estimated lift is the exposed posterior minus
+the control posterior. Its score contribution is bounded to +/-1 and shrunk by the smaller arm's
+sample confidence before joining the associative adjustment. This is a controlled estimate, not
+proof of causality: repository drift, other retrieved Skills, and generator changes can still
+confound it.
 
 Every relevant Skill also receives an explainable health state. New Skills are `unobserved`; Skills
 with fewer than five repository-scoped observations remain `learning`. At five or more observations,
@@ -473,7 +488,7 @@ To include code localization, wrap the trace in an analysis request:
 - `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
 - `skills.py` converts validated repairs into portable YAML skills.
 - `registry.py` safely indexes and ranks the latest learned Skill versions with conservative,
-  explainable outcome adjustments, recoverable quarantine gates, and rotating probes.
+  explainable exposed/control adjustments, recoverable quarantine gates, and rotating probes.
 - `service.py` orchestrates the Observe -> Diagnose -> Repair -> Evaluate -> Learn workflow.
 - `api.py` and `cli.py` are transport adapters.
 
@@ -511,8 +526,9 @@ uv run pytest
 - **Phase 3 - Self-Evolving Harness:** versioned repair Skills and explainable retrieval are
   available with outcome-aware selection. Adaptive provider portfolios now perform controlled,
   auditable exploration, attempt-aware failover attribution, and failure-type-specialized
-  selection. Skill health now closes the outcome-to-retrieval feedback loop with quarantine and
-  recovery probes; finer causal credit assignment and harness optimization are next.
+  selection. Skill health closes the outcome-to-retrieval feedback loop with quarantine and
+  recovery probes, while periodic ablation supplies a cautious controlled lift estimate. Richer
+  causal designs and harness optimization are next.
 
 ## License
 

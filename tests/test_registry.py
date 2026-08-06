@@ -204,6 +204,44 @@ def test_new_skill_version_resets_quarantine_history(tmp_path: Path) -> None:
     assert result.quarantined_skills == []
 
 
+def test_registry_explains_and_applies_controlled_ablation_score(tmp_path: Path) -> None:
+    for name in ("a_harmful", "z_beneficial"):
+        SkillGenerator().save(_skill(name), tmp_path)
+    outcomes = {
+        (name, 1): SkillOutcomeStats(
+            skill_name=name,
+            skill_version=1,
+            observations=4,
+            accepted=2,
+            rejected=2,
+            unevaluated_failures=0,
+            post_acceptance_failures=0,
+            posterior_success_rate=0.5,
+            confidence=4 / 9,
+            score_adjustment=adjustment,
+            control_observations=4,
+            control_accepted=control_accepted,
+            control_rejected=4 - control_accepted,
+            control_posterior_success_rate=control_rate,
+            estimated_lift=0.5 - control_rate,
+            ablation_confidence=4 / 9,
+            ablation_score_adjustment=adjustment,
+        )
+        for name, adjustment, control_accepted, control_rate in (
+            ("a_harmful", -0.3, 3, 5 / 8),
+            ("z_beneficial", 0.3, 1, 3 / 8),
+        )
+    }
+
+    result = SkillRegistry(tmp_path, outcomes).search(
+        SkillQuery(text="incorrect answer with low score", limit=2)
+    )
+
+    assert [match.skill.name for match in result.matches] == ["z_beneficial", "a_harmful"]
+    assert any("controlled ablation" in reason for reason in result.matches[0].reasons)
+    assert any("estimated lift +0.125" in reason for reason in result.matches[0].reasons)
+
+
 def test_registry_rotates_controlled_probes_across_quarantined_skills(tmp_path: Path) -> None:
     for name in ("a_harmful", "b_harmful"):
         SkillGenerator().save(_skill(name), tmp_path)

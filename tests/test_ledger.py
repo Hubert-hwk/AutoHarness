@@ -155,6 +155,71 @@ def test_ledger_shrinks_skill_outcome_scores_toward_neutral(tmp_path: Path) -> N
     assert outcomes[("poor", 1)].score_adjustment == pytest.approx(-0.952)
 
 
+def test_ledger_estimates_controlled_skill_lift(tmp_path: Path) -> None:
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    skill = {"name": "controlled_repair", "version": 1}
+    for index in range(5):
+        exposed = ledger.propose(
+            title="Exposed outcome",
+            repository_path=tmp_path,
+            patch_sha256=f"{index + 1:064x}",
+            failure_type=FailureType.REASONING,
+            metadata={"retrieved_skills": [skill]},
+        )
+        ledger.transition(exposed.candidate_id, CandidateStatus.VERIFIED)
+        control = ledger.propose(
+            title="Control outcome",
+            repository_path=tmp_path,
+            patch_sha256=f"{index + 101:064x}",
+            failure_type=FailureType.REASONING,
+            metadata={"withheld_skills": [skill]},
+        )
+        ledger.transition(control.candidate_id, CandidateStatus.REJECTED)
+
+    stats = ledger.skill_outcomes(repository_path=tmp_path)[("controlled_repair", 1)]
+
+    assert stats.observations == 5
+    assert stats.accepted == 5
+    assert stats.control_observations == 5
+    assert stats.control_rejected == 5
+    assert stats.posterior_success_rate == pytest.approx(0.7778)
+    assert stats.control_posterior_success_rate == pytest.approx(0.2222)
+    assert stats.estimated_lift == pytest.approx(0.5556)
+    assert stats.ablation_confidence == pytest.approx(0.5)
+    assert stats.ablation_score_adjustment == pytest.approx(0.556)
+    assert stats.score_adjustment == pytest.approx(1.111)
+
+
+def test_ledger_deduplicates_skill_evidence_across_autofix_retries(tmp_path: Path) -> None:
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    metadata = {
+        "autofix_run_id": "shared-run",
+        "retrieved_skills": [{"name": "retry_repair", "version": 1}],
+    }
+    rejected = ledger.propose(
+        title="Rejected retry",
+        repository_path=tmp_path,
+        patch_sha256="1" * 64,
+        failure_type=FailureType.REASONING,
+        metadata=metadata,
+    )
+    ledger.transition(rejected.candidate_id, CandidateStatus.REJECTED)
+    accepted = ledger.propose(
+        title="Accepted retry",
+        repository_path=tmp_path,
+        patch_sha256="2" * 64,
+        failure_type=FailureType.REASONING,
+        metadata=metadata,
+    )
+    ledger.transition(accepted.candidate_id, CandidateStatus.VERIFIED)
+
+    stats = ledger.skill_outcomes(repository_path=tmp_path)[("retry_repair", 1)]
+
+    assert stats.observations == 1
+    assert stats.accepted == 1
+    assert stats.rejected == 0
+
+
 def test_ledger_persists_autofix_run_without_trace_by_default(tmp_path: Path) -> None:
     database = tmp_path / "ledger.db"
     ledger = RepairLedger(database)

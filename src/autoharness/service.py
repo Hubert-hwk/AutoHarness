@@ -143,6 +143,7 @@ class AutoHarness:
         skill_limit: int = 5,
         max_attempts: int = 3,
         skill_quarantine_probe_interval: int = 10,
+        skill_ablation_interval: int = 20,
         persist_trace: bool = False,
         recover_stale_after_seconds: float | None = None,
     ) -> AutoFixPipelineResult:
@@ -159,6 +160,7 @@ class AutoHarness:
             skill_limit=skill_limit,
             max_attempts=max_attempts,
             skill_quarantine_probe_interval=skill_quarantine_probe_interval,
+            skill_ablation_interval=skill_ablation_interval,
             persist_trace=persist_trace,
             recover_stale_after_seconds=recover_stale_after_seconds,
         )

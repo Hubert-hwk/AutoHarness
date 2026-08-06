@@ -229,6 +229,78 @@ def test_autofix_orders_skill_context_using_repository_outcomes(tmp_path: Path) 
     assert any("observed outcomes" in reason for reason in best.reasons)
 
 
+def test_autofix_records_periodic_skill_ablation_as_control_evidence(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "repository")
+    skills = repository / ".autoharness" / "skills"
+    _seed_skill(skills)
+    ledger = RepairLedger(repository / ".autoharness" / "ledger.db")
+    pipeline = AutoFixPipeline(_generator(), ledger, skills)
+
+    control = pipeline.run(
+        _trace(),
+        repository,
+        _plan(),
+        max_attempts=1,
+        skill_ablation_interval=1,
+    )
+
+    assert control.recommendation.skills.matches == []
+    assert control.recommendation.withheld_skills[0].skill_name == "historical_score_repair"
+    assert control.recommendation.withheld_skills[0].experiment_index == 0
+    withheld = control.evolution.candidate.metadata["withheld_skills"][0]
+    assert withheld["name"] == "historical_score_repair"
+    assert withheld["original_rank"] == 1
+
+    exposed = pipeline.run(
+        _trace(),
+        repository,
+        _plan(),
+        max_attempts=1,
+        skill_ablation_interval=0,
+    )
+    assert exposed.recommendation.skills.matches[0].skill.name == "historical_score_repair"
+    stats = ledger.skill_outcomes(repository_path=repository)[("historical_score_repair", 1)]
+    assert stats.observations == 1
+    assert stats.accepted == 1
+    assert stats.control_observations == 1
+    assert stats.control_accepted == 1
+    assert stats.estimated_lift == 0
+
+
+def test_autofix_rotates_skill_ablation_and_preserves_quarantine_probes(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "repository")
+    (repository / "generator.py").write_text(
+        "import json, sys\n"
+        "json.load(sys.stdin)\n"
+        "sys.stdout.write('--- a/value.txt\\n+++ b/value.txt\\n@@ -1 +1 @@\\n-1\\n+2\\n')\n",
+        encoding="utf-8",
+    )
+    skills = tmp_path / "skills"
+    for name in ("a_repair", "b_repair"):
+        SkillGenerator().save_versioned(
+            Skill(
+                name=name,
+                description="Repair low scores",
+                failure_type=FailureType.REASONING,
+                triggers=["low score", "incorrect response"],
+                context={"affected_components": ["value"], "root_cause": "low value"},
+                workflow=["Increase value"],
+                evaluation=["Run score benchmark"],
+            ),
+            skills,
+        )
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    pipeline = AutoFixPipeline(_generator(), ledger, skills)
+
+    first = pipeline.run(_trace(), repository, _plan(), max_attempts=1, skill_ablation_interval=1)
+    second = pipeline.run(_trace(), repository, _plan(), max_attempts=1, skill_ablation_interval=1)
+
+    assert first.recommendation.withheld_skills[0].skill_name == "a_repair"
+    assert second.recommendation.withheld_skills[0].skill_name == "b_repair"
+    assert first.recommendation.withheld_skills[0].experiment_index == 0
+    assert second.recommendation.withheld_skills[0].experiment_index == 1
+
+
 def test_autofix_safe_default_verifies_without_promoting(tmp_path: Path) -> None:
     repository = _repository(tmp_path / "repository")
     ledger = RepairLedger(tmp_path / "ledger.db")
@@ -631,9 +703,11 @@ def test_autofix_quarantines_harmful_skill_and_recovers_it_through_probes(
         _plan(),
         max_attempts=1,
         skill_quarantine_probe_interval=1,
+        skill_ablation_interval=1,
     )
     first_match = first_probe.recommendation.skills.matches[0]
     assert first_match.quarantine_probe
+    assert first_probe.recommendation.withheld_skills == []
     assert first_match.health.status == SkillHealthStatus.QUARANTINED
     retrieved = first_probe.evolution.candidate.metadata["retrieved_skills"][0]
     assert retrieved["health"] == SkillHealthStatus.QUARANTINED.value
@@ -721,6 +795,24 @@ def test_autofix_rejects_invalid_skill_probe_interval(
             repository,
             _plan(),
             skill_quarantine_probe_interval=probe_interval,
+        )
+
+
+@pytest.mark.parametrize("ablation_interval", [-1, 1001])
+def test_autofix_rejects_invalid_skill_ablation_interval(
+    tmp_path: Path,
+    ablation_interval: int,
+) -> None:
+    repository = _repository(tmp_path / "repository")
+
+    with pytest.raises(ValueError, match="between 0 and 1000"):
+        AutoFixPipeline(
+            _generator(), RepairLedger(tmp_path / "ledger.db"), tmp_path / "skills"
+        ).run(
+            _trace(),
+            repository,
+            _plan(),
+            skill_ablation_interval=ablation_interval,
         )
 
 

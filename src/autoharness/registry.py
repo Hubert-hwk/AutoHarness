@@ -208,6 +208,16 @@ class SkillRegistry:
                 f"Bayesian rate {outcome.posterior_success_rate:.3f}, "
                 f"score {direction}{outcome.score_adjustment:.3f}"
             )
+            if outcome.control_observations:
+                ablation_direction = "+" if outcome.ablation_score_adjustment >= 0 else ""
+                reasons.append(
+                    "controlled ablation: "
+                    f"{outcome.control_observations} controls, control Bayesian rate "
+                    f"{outcome.control_posterior_success_rate:.3f}, estimated lift "
+                    f"{outcome.estimated_lift:+.3f}, confidence "
+                    f"{outcome.ablation_confidence:.3f}, score "
+                    f"{ablation_direction}{outcome.ablation_score_adjustment:.3f}"
+                )
         health = self._health(skill, outcome)
         reasons.append(f"Skill health is {health.status.value}: {health.reason}")
         return SkillMatch(
