@@ -32,6 +32,7 @@ pipeline that work locally without requiring an LLM or external service.
   reasons, and duplicate-patch suppression.
 - Persistent AutoFix run and attempt records covering generation errors through final outcomes,
   with privacy-safe Trace hashing by default.
+- Heartbeat-backed recovery for interrupted AutoFix runs with atomic unfinished-candidate cleanup.
 - CLI and FastAPI interfaces backed by the same application service.
 
 ```text
@@ -244,6 +245,26 @@ Attempt rows are immutable and include their phase, provider, patch digest, cand
 metrics, rejection reasons, and bounded error. Candidate metadata also carries its `run_id`,
 providing navigation in both directions.
 
+Runs refresh a heartbeat between diagnosis, generation, and attempt-recording phases. Recover
+abandoned `running` records explicitly, or opt into repository-scoped recovery before a new run:
+
+```bash
+autoharness autofix-recover \
+  --ledger PATH/.autoharness/ledger.db \
+  --repo PATH \
+  --older-than-seconds 3600
+
+autoharness autofix TRACE.json GENERATOR.json PLAN.json \
+  --repo PATH \
+  --allow-command-execution \
+  --recover-stale-after 3600
+```
+
+Recovery atomically marks claimed runs `interrupted` and moves their unfinished candidates to
+`failed`, retaining the prior candidate status in metadata. It is disabled by default. Heartbeats
+cannot advance while a generator or benchmark subprocess is blocking, so choose a threshold
+longer than the worst-case generator timeout plus benchmark duration.
+
 Generator commands are trusted local processes, not an operating-system sandbox. AutoHarness
 protects the generator program from modifying itself, rejects malformed, binary, oversized,
 or unsafe patches, and never executes a generated shell command. See
@@ -284,8 +305,9 @@ To include code localization, wrap the trace in an analysis request:
 - `autofix.py` orchestrates feedback-driven Diagnose -> Retrieve -> Generate -> Verify ->
   Promote -> Learn attempts.
 - `RepairPipeline` promotes accepted candidates with stale-source detection and backups.
-- `ledger.py` persists AutoFix runs and immutable attempts, the repair state machine, append-only
-  lifecycle events, and Skill outcome associations in SQLite.
+- `ledger.py` persists heartbeat-backed AutoFix runs, immutable attempts, atomic interruption
+  recovery, the repair state machine, append-only lifecycle events, and Skill outcome associations
+  in SQLite.
 - `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
 - `skills.py` converts validated repairs into portable YAML skills.
 - `registry.py` safely indexes and ranks the latest learned Skill versions with conservative,
@@ -295,7 +317,7 @@ To include code localization, wrap the trace in an analysis request:
 
 The deterministic core is intentional: it provides a measurable baseline while keeping
 generation providers replaceable. Future phases will add model-backed provider adapters,
-interrupted-run recovery, and feedback-driven harness optimization.
+richer benchmark integrations, and feedback-driven harness optimization.
 
 ## Development
 
@@ -322,7 +344,8 @@ uv run pytest
 - **Phase 1 - Agent Debug Copilot:** trace ingestion, diagnosis, and code localization.
 - **Phase 2 - AutoFix Agent:** evaluation, verification, guarded promotion, and repair
   history plus pluggable isolated patch generation, feedback-driven retries, and persistent run
-  auditing are available; model-backed providers and richer benchmark adapters are next.
+  auditing with interrupted-run recovery are available; model-backed providers and richer
+  benchmark adapters are next.
 - **Phase 3 - Self-Evolving Harness:** versioned repair Skills and explainable retrieval are
   available with outcome-aware selection; causal credit assignment, controlled exploration,
   and harness optimization are next.

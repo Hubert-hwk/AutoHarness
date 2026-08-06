@@ -141,6 +141,7 @@ class AutoHarness:
         skill_limit: int = 5,
         max_attempts: int = 3,
         persist_trace: bool = False,
+        recover_stale_after_seconds: float | None = None,
     ) -> AutoFixPipelineResult:
         pipeline = AutoFixPipeline(
             generator,
@@ -155,4 +156,5 @@ class AutoHarness:
             skill_limit=skill_limit,
             max_attempts=max_attempts,
             persist_trace=persist_trace,
+            recover_stale_after_seconds=recover_stale_after_seconds,
         )

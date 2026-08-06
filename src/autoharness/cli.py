@@ -318,6 +318,26 @@ def autofix_run(
     )
 
 
+@app.command("autofix-recover")
+def autofix_recover(
+    ledger: Annotated[Path, typer.Option("--ledger", exists=True, dir_okay=False)],
+    older_than_seconds: Annotated[
+        float,
+        typer.Option("--older-than-seconds", min=0),
+    ] = 3600,
+    repo: Annotated[
+        Path | None,
+        typer.Option("--repo", exists=True, file_okay=False, readable=True),
+    ] = None,
+) -> None:
+    """Interrupt stale AutoFix runs and fail their unfinished candidates atomically."""
+    recovered = RepairLedger(ledger).recover_stale_autofix_runs(
+        older_than_seconds=older_than_seconds,
+        repository_path=repo,
+    )
+    typer.echo(json.dumps([item.model_dump(mode="json") for item in recovered], indent=2))
+
+
 @app.command("autofix")
 def autofix(
     trace_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
@@ -339,6 +359,14 @@ def autofix(
             help="Store the full trace in the ledger; the default stores only its SHA-256.",
         ),
     ] = False,
+    recover_stale_after_seconds: Annotated[
+        float | None,
+        typer.Option(
+            "--recover-stale-after",
+            min=0,
+            help="Interrupt older running records for this repository before starting.",
+        ),
+    ] = None,
 ) -> None:
     """Diagnose, retrieve experience, generate, verify, and optionally learn a repair."""
     if not allow_command_execution:
@@ -366,6 +394,7 @@ def autofix(
             skill_limit=skill_limit,
             max_attempts=max_attempts,
             persist_trace=persist_trace,
+            recover_stale_after_seconds=recover_stale_after_seconds,
         )
     except (LedgerError, OSError, PatchGenerationError, VerificationError) as exc:
         typer.echo(f"Autofix failed: {exc}", err=True)

@@ -2,6 +2,15 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.9.0 - 2026-08-07
+
+- Add heartbeat leases for active AutoFix runs and refresh them between pipeline phases.
+- Atomically recover stale running records as interrupted without claiming recently refreshed work.
+- Fail unfinished candidates in the same SQLite transaction while preserving their prior status.
+- Scope automatic recovery to the current repository and keep it explicitly opt-in.
+- Add `autofix-recover` for manual recovery and `autofix --recover-stale-after` for startup recovery.
+- Cover repository isolation, candidate cleanup, Trace redaction, and end-to-end startup recovery.
+
 ## 0.8.0 - 2026-08-07
 
 - Add persistent AutoFix run records with running, succeeded, rejected, and failed states.

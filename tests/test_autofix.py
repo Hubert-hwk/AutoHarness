@@ -1,3 +1,4 @@
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -232,6 +233,34 @@ def test_autofix_safe_default_verifies_without_promoting(tmp_path: Path) -> None
     assert result.run.status == AutoFixRunStatus.SUCCEEDED
     assert result.run.trace == trace
     assert (repository / "value.txt").read_text(encoding="utf-8") == "1\n"
+
+
+def test_autofix_optionally_recovers_stale_repository_runs_before_start(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "repository")
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    stale = ledger.start_autofix_run(
+        repository_path=repository,
+        trace=AgentTrace(task="Abandoned repair", events=[]),
+        generator_provider="old-generator",
+        max_attempts=1,
+        promote_requested=False,
+    )
+    with sqlite3.connect(ledger.path) as connection:
+        connection.execute(
+            "UPDATE autofix_runs SET updated_at = ? WHERE run_id = ?",
+            ("2000-01-01T00:00:00+00:00", stale.run_id),
+        )
+
+    result = AutoFixPipeline(_generator(), ledger, tmp_path / "skills").run(
+        _trace(),
+        repository,
+        _plan(),
+        max_attempts=1,
+        recover_stale_after_seconds=60,
+    )
+
+    assert ledger.get_autofix_run(stale.run_id).status == AutoFixRunStatus.INTERRUPTED
+    assert result.run.status == AutoFixRunStatus.SUCCEEDED
 
 
 def test_autofix_records_rejected_generated_patch(tmp_path: Path) -> None:

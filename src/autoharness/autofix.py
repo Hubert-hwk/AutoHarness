@@ -50,10 +50,16 @@ class AutoFixPipeline:
         skill_limit: int = 5,
         max_attempts: int = 3,
         persist_trace: bool = False,
+        recover_stale_after_seconds: float | None = None,
     ) -> AutoFixPipelineResult:
         if not 1 <= max_attempts <= 10:
             raise ValueError("max_attempts must be between 1 and 10")
         source = Path(repository).expanduser().resolve()
+        if recover_stale_after_seconds is not None:
+            self.ledger.recover_stale_autofix_runs(
+                older_than_seconds=recover_stale_after_seconds,
+                repository_path=source,
+            )
         run = self.ledger.start_autofix_run(
             repository_path=source,
             trace=trace,
@@ -113,6 +119,7 @@ class AutoFixPipeline:
             allow_missing_directory=True,
             outcome_stats=self.ledger.skill_outcomes(repository_path=source),
         )
+        self.ledger.heartbeat_autofix_run(run.run_id)
         protected_paths = list(
             dict.fromkeys(
                 [
@@ -132,6 +139,7 @@ class AutoFixPipeline:
         last_error_attempt = 0
 
         for attempt_number in range(1, max_attempts + 1):
+            self.ledger.heartbeat_autofix_run(run.run_id)
             context = PatchGenerationContext(
                 trace=trace,
                 diagnosis=recommendation.diagnosis,
@@ -163,6 +171,8 @@ class AutoFixPipeline:
                 if attempt_number == max_attempts:
                     raise
                 continue
+
+            self.ledger.heartbeat_autofix_run(run.run_id)
 
             duplicate_of = seen_patches.get(generated.patch_sha256)
             if duplicate_of is not None:

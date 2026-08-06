@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -6,7 +7,7 @@ from typer.testing import CliRunner
 
 from autoharness.cli import app
 from autoharness.ledger import RepairLedger
-from autoharness.models import CandidateStatus, FailureType, Skill
+from autoharness.models import AgentTrace, CandidateStatus, FailureType, Skill
 from autoharness.skills import SkillGenerator
 
 
@@ -253,6 +254,44 @@ def test_autofix_cli_runs_full_pipeline(tmp_path: Path) -> None:
     )
     assert missing.exit_code == 3
     assert "Unknown AutoFix run" in missing.output
+
+
+def test_autofix_recover_cli_interrupts_stale_run(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.db"
+    ledger = RepairLedger(ledger_path)
+    run = ledger.start_autofix_run(
+        repository_path=tmp_path,
+        trace=AgentTrace(task="Recover an abandoned run"),
+        generator_provider="test-generator",
+        max_attempts=2,
+        promote_requested=False,
+        persist_trace=True,
+    )
+    with sqlite3.connect(ledger_path) as connection:
+        connection.execute(
+            "UPDATE autofix_runs SET updated_at = ? WHERE run_id = ?",
+            ("2000-01-01T00:00:00+00:00", run.run_id),
+        )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "autofix-recover",
+            "--ledger",
+            str(ledger_path),
+            "--older-than-seconds",
+            "60",
+            "--repo",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload[0]["run_id"] == run.run_id
+    assert payload[0]["status"] == "interrupted"
+    assert payload[0]["error_type"] == "AutoFixInterrupted"
+    assert payload[0]["trace"] is None
 
 
 def test_skill_outcomes_cli_and_outcome_aware_recommendation(tmp_path: Path) -> None:

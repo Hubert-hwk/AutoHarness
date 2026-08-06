@@ -70,6 +70,7 @@ class AutoFixRunStatus(StrEnum):
     SUCCEEDED = "succeeded"
     REJECTED = "rejected"
     FAILED = "failed"
+    INTERRUPTED = "interrupted"
 
 
 class TraceEvent(BaseModel):

@@ -1,4 +1,5 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -267,3 +268,140 @@ def test_ledger_enforces_immutable_autofix_attempts_and_terminal_runs(tmp_path: 
         )
     with pytest.raises(LedgerError, match="already terminal"):
         ledger.finish_autofix_run(run.run_id, AutoFixRunStatus.FAILED)
+    with pytest.raises(LedgerError, match="already terminal"):
+        ledger.heartbeat_autofix_run(run.run_id)
+    with pytest.raises(LedgerError, match="non-negative"):
+        ledger.recover_stale_autofix_runs(older_than_seconds=-1)
+
+
+def test_ledger_atomically_recovers_stale_run_and_active_candidate(tmp_path: Path) -> None:
+    database = tmp_path / "ledger.db"
+    ledger = RepairLedger(database)
+    repository = tmp_path / "repository"
+    run = ledger.start_autofix_run(
+        repository_path=repository,
+        trace=AgentTrace(task="Interrupted repair", events=[]),
+        generator_provider="test-generator",
+        max_attempts=3,
+        promote_requested=True,
+        persist_trace=True,
+    )
+    candidate = ledger.propose(
+        title="Interrupted candidate",
+        repository_path=repository,
+        patch_sha256="f" * 64,
+        failure_type=FailureType.REASONING,
+        metadata={"autofix_run_id": run.run_id, "autofix_attempt": 1},
+    )
+    candidate = ledger.transition(candidate.candidate_id, CandidateStatus.VERIFIED)
+    ledger.record_autofix_attempt(
+        run.run_id,
+        AutoFixAttemptFeedback(
+            attempt_number=1,
+            phase=AutoFixPhase.COMPLETE,
+            provider="test-generator",
+            accepted=True,
+            candidate_id=candidate.candidate_id,
+            patch_sha256=candidate.patch_sha256,
+            status=candidate.status,
+        ),
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE autofix_runs SET updated_at = ? WHERE run_id = ?",
+            ("2000-01-01T00:00:00+00:00", run.run_id),
+        )
+
+    recovered = ledger.recover_stale_autofix_runs(
+        older_than_seconds=60,
+        repository_path=repository,
+    )
+
+    assert len(recovered) == 1
+    assert recovered[0].status == AutoFixRunStatus.INTERRUPTED
+    assert recovered[0].final_candidate_id == candidate.candidate_id
+    assert recovered[0].error_type == "AutoFixInterrupted"
+    assert recovered[0].trace is None
+    assert recovered[0].trace_persisted
+    failed = ledger.get(candidate.candidate_id)
+    assert failed.status == CandidateStatus.FAILED
+    assert failed.metadata["failed_from_status"] == CandidateStatus.VERIFIED
+    assert ledger.events(candidate.candidate_id)[-1].status == CandidateStatus.FAILED
+
+
+def test_ledger_heartbeat_and_repository_scope_prevent_stale_recovery(tmp_path: Path) -> None:
+    database = tmp_path / "ledger.db"
+    ledger = RepairLedger(database)
+    protected_repository = tmp_path / "protected"
+    other_repository = tmp_path / "other"
+    protected = ledger.start_autofix_run(
+        repository_path=protected_repository,
+        trace=AgentTrace(task="Still active", events=[]),
+        generator_provider="test-generator",
+        max_attempts=1,
+        promote_requested=False,
+    )
+    other = ledger.start_autofix_run(
+        repository_path=other_repository,
+        trace=AgentTrace(task="Different repository", events=[]),
+        generator_provider="test-generator",
+        max_attempts=1,
+        promote_requested=False,
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE autofix_runs SET updated_at = ?",
+            ("2000-01-01T00:00:00+00:00",),
+        )
+
+    heartbeat = ledger.heartbeat_autofix_run(protected.run_id)
+    recovered = ledger.recover_stale_autofix_runs(
+        older_than_seconds=60,
+        repository_path=protected_repository,
+    )
+
+    assert heartbeat.updated_at > protected.updated_at
+    assert recovered == []
+    assert ledger.get_autofix_run(protected.run_id).status == AutoFixRunStatus.RUNNING
+    assert ledger.get_autofix_run(other.run_id).status == AutoFixRunStatus.RUNNING
+
+
+def test_ledger_recovery_and_completion_have_exactly_one_winner(tmp_path: Path) -> None:
+    database = tmp_path / "ledger.db"
+    ledger = RepairLedger(database)
+    run = ledger.start_autofix_run(
+        repository_path=tmp_path,
+        trace=AgentTrace(task="Race recovery against completion"),
+        generator_provider="test-generator",
+        max_attempts=1,
+        promote_requested=False,
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE autofix_runs SET updated_at = ? WHERE run_id = ?",
+            ("2000-01-01T00:00:00+00:00", run.run_id),
+        )
+
+    def finish() -> AutoFixRunStatus | str:
+        try:
+            return ledger.finish_autofix_run(run.run_id, AutoFixRunStatus.SUCCEEDED).status
+        except LedgerError:
+            return "lost"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        recovery_future = executor.submit(
+            ledger.recover_stale_autofix_runs,
+            older_than_seconds=0,
+        )
+        finish_future = executor.submit(finish)
+        recovered = recovery_future.result()
+        finished = finish_future.result()
+
+    terminal = ledger.get_autofix_run(run.run_id).status
+    if terminal == AutoFixRunStatus.INTERRUPTED:
+        assert [item.run_id for item in recovered] == [run.run_id]
+        assert finished == "lost"
+    else:
+        assert terminal == AutoFixRunStatus.SUCCEEDED
+        assert recovered == []
+        assert finished == AutoFixRunStatus.SUCCEEDED

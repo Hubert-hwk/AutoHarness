@@ -7,7 +7,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -234,6 +234,152 @@ class RepairLedger:
             )
         return self.get_autofix_run(run_id)
 
+    def heartbeat_autofix_run(self, run_id: str) -> AutoFixRunRecord:
+        """Refresh a running lease so explicit stale-run recovery will not claim it."""
+        now = self._now()
+        with self._connection() as connection:
+            refreshed = connection.execute(
+                "UPDATE autofix_runs SET updated_at = ? WHERE run_id = ? AND status = ?",
+                (now, run_id, AutoFixRunStatus.RUNNING.value),
+            )
+            if refreshed.rowcount != 1:
+                row = connection.execute(
+                    "SELECT status FROM autofix_runs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+                if row is None:
+                    raise LedgerError(f"Unknown AutoFix run: {run_id}")
+                raise LedgerError(f"AutoFix run is already terminal: {run_id}")
+        return self.get_autofix_run(run_id)
+
+    def recover_stale_autofix_runs(
+        self,
+        *,
+        older_than_seconds: float,
+        repository_path: str | Path | None = None,
+    ) -> list[AutoFixRunRecord]:
+        """Atomically interrupt stale runs and fail their non-terminal candidates."""
+        if older_than_seconds < 0:
+            raise LedgerError("older_than_seconds must be non-negative")
+        now_value = datetime.now(UTC)
+        now = now_value.isoformat()
+        cutoff = (now_value - timedelta(seconds=older_than_seconds)).isoformat()
+        message = f"AutoFix run heartbeat exceeded {older_than_seconds:g} seconds"
+        parameters: tuple[Any, ...]
+        query = (
+            "SELECT run_id, repository_path FROM autofix_runs "
+            "WHERE status = ? AND updated_at <= ? ORDER BY updated_at"
+        )
+        parameters = (AutoFixRunStatus.RUNNING.value, cutoff)
+        if repository_path is not None:
+            query = (
+                "SELECT run_id, repository_path FROM autofix_runs "
+                "WHERE status = ? AND updated_at <= ? AND repository_path = ? "
+                "ORDER BY updated_at"
+            )
+            parameters = (
+                AutoFixRunStatus.RUNNING.value,
+                cutoff,
+                str(Path(repository_path).expanduser().resolve()),
+            )
+
+        recovered_ids: list[str] = []
+        with self._connection() as connection:
+            stale_rows = connection.execute(query, parameters).fetchall()
+            for stale in stale_rows:
+                run_id = str(stale["run_id"])
+                claimed = connection.execute(
+                    """
+                    UPDATE autofix_runs
+                    SET status = ?, error_type = ?, error = ?, updated_at = ?
+                    WHERE run_id = ? AND status = ? AND updated_at <= ?
+                    """,
+                    (
+                        AutoFixRunStatus.INTERRUPTED.value,
+                        "AutoFixInterrupted",
+                        message,
+                        now,
+                        run_id,
+                        AutoFixRunStatus.RUNNING.value,
+                        cutoff,
+                    ),
+                )
+                if claimed.rowcount != 1:
+                    continue
+                active = [
+                    row
+                    for row in connection.execute(
+                        """
+                        SELECT * FROM repair_candidates
+                        WHERE repository_path = ? AND status IN (?, ?, ?)
+                        ORDER BY updated_at DESC
+                        """,
+                        (
+                            str(stale["repository_path"]),
+                            CandidateStatus.PROPOSED.value,
+                            CandidateStatus.VERIFIED.value,
+                            CandidateStatus.PROMOTED.value,
+                        ),
+                    ).fetchall()
+                    if self._candidate_run_id(row) == run_id
+                ]
+                latest_attempt = connection.execute(
+                    """
+                    SELECT candidate_id FROM autofix_attempts
+                    WHERE run_id = ? AND candidate_id IS NOT NULL
+                    ORDER BY attempt_number DESC LIMIT 1
+                    """,
+                    (run_id,),
+                ).fetchone()
+                final_candidate_id = (
+                    str(active[0]["candidate_id"])
+                    if active
+                    else (
+                        str(latest_attempt["candidate_id"]) if latest_attempt is not None else None
+                    )
+                )
+                connection.execute(
+                    "UPDATE autofix_runs SET final_candidate_id = ? WHERE run_id = ?",
+                    (final_candidate_id, run_id),
+                )
+                for candidate_row in active:
+                    current = CandidateStatus(candidate_row["status"])
+                    details = {
+                        "error": message,
+                        "error_type": "AutoFixInterrupted",
+                        "failed_from_status": current.value,
+                    }
+                    metadata = self._load_json(candidate_row["metadata"])
+                    metadata.update(details)
+                    candidate_id = str(candidate_row["candidate_id"])
+                    failed = connection.execute(
+                        """
+                        UPDATE repair_candidates
+                        SET status = ?, metadata = ?, updated_at = ?
+                        WHERE candidate_id = ? AND status = ?
+                        """,
+                        (
+                            CandidateStatus.FAILED.value,
+                            self._json(metadata),
+                            now,
+                            candidate_id,
+                            current.value,
+                        ),
+                    )
+                    if failed.rowcount == 1:
+                        self._insert_event(
+                            connection,
+                            candidate_id,
+                            CandidateStatus.FAILED,
+                            details,
+                            now,
+                        )
+                recovered_ids.append(run_id)
+        return [
+            self.get_autofix_run(run_id).model_copy(update={"trace": None})
+            for run_id in recovered_ids
+        ]
+
     def record_autofix_attempt(
         self,
         run_id: str,
@@ -242,14 +388,26 @@ class RepairLedger:
         now = self._now()
         try:
             with self._connection() as connection:
+                refreshed = connection.execute(
+                    """
+                    UPDATE autofix_runs SET updated_at = ?
+                    WHERE run_id = ? AND status = ?
+                    """,
+                    (now, run_id, AutoFixRunStatus.RUNNING.value),
+                )
+                if refreshed.rowcount != 1:
+                    row = connection.execute(
+                        "SELECT status FROM autofix_runs WHERE run_id = ?",
+                        (run_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise LedgerError(f"Unknown AutoFix run: {run_id}")
+                    raise LedgerError(f"AutoFix run is already terminal: {run_id}")
                 row = connection.execute(
-                    "SELECT status, max_attempts FROM autofix_runs WHERE run_id = ?",
+                    "SELECT max_attempts FROM autofix_runs WHERE run_id = ?",
                     (run_id,),
                 ).fetchone()
-                if row is None:
-                    raise LedgerError(f"Unknown AutoFix run: {run_id}")
-                if AutoFixRunStatus(row["status"]) != AutoFixRunStatus.RUNNING:
-                    raise LedgerError(f"AutoFix run is already terminal: {run_id}")
+                assert row is not None
                 if feedback.attempt_number > row["max_attempts"]:
                     raise LedgerError(
                         f"AutoFix attempt {feedback.attempt_number} exceeds run budget "
@@ -305,19 +463,11 @@ class RepairLedger:
             raise LedgerError("Cannot finish an AutoFix run with running status")
         now = self._now()
         with self._connection() as connection:
-            row = connection.execute(
-                "SELECT status FROM autofix_runs WHERE run_id = ?",
-                (run_id,),
-            ).fetchone()
-            if row is None:
-                raise LedgerError(f"Unknown AutoFix run: {run_id}")
-            if AutoFixRunStatus(row["status"]) != AutoFixRunStatus.RUNNING:
-                raise LedgerError(f"AutoFix run is already terminal: {run_id}")
-            connection.execute(
+            finished = connection.execute(
                 """
                 UPDATE autofix_runs
                 SET status = ?, final_candidate_id = ?, error_type = ?, error = ?, updated_at = ?
-                WHERE run_id = ?
+                WHERE run_id = ? AND status = ?
                 """,
                 (
                     status.value,
@@ -326,8 +476,17 @@ class RepairLedger:
                     self._error_text(error) if error is not None else None,
                     now,
                     run_id,
+                    AutoFixRunStatus.RUNNING.value,
                 ),
             )
+            if finished.rowcount != 1:
+                row = connection.execute(
+                    "SELECT status FROM autofix_runs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+                if row is None:
+                    raise LedgerError(f"Unknown AutoFix run: {run_id}")
+                raise LedgerError(f"AutoFix run is already terminal: {run_id}")
         return self.get_autofix_run(run_id)
 
     def get_autofix_run(self, run_id: str) -> AutoFixRunRecord:
@@ -635,6 +794,14 @@ class RepairLedger:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    @staticmethod
+    def _candidate_run_id(row: sqlite3.Row) -> str | None:
+        metadata = RepairLedger._load_json(row["metadata"])
+        if not isinstance(metadata, dict):
+            return None
+        value = metadata.get("autofix_run_id")
+        return value if isinstance(value, str) else None
 
     @staticmethod
     def _error_text(error: Exception) -> str:
