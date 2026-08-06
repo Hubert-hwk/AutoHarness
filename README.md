@@ -20,6 +20,7 @@ and does not require an LLM or external service.
 - Repair recommendations and YAML skill generation from validated repair experiences.
 - Before/after evaluation gates with test requirements, hard thresholds, and per-metric
   regression budgets.
+- Non-destructive patch verification in separate disposable baseline and candidate copies.
 - CLI and FastAPI interfaces backed by the same application service.
 
 ```text
@@ -88,6 +89,25 @@ Each metric declares whether higher or lower is better, an optional hard thresho
 the maximum relative regression it may tolerate. Candidate test failures are rejected by
 default.
 
+Verify a unified diff without changing the source repository:
+
+```bash
+autoharness verify-patch \
+  examples/verification_target/improve.patch \
+  examples/verification_target/plan.json \
+  --repo examples/verification_target \
+  --allow-command-execution
+```
+
+The verifier rejects unsafe paths, binary and symlink patches, protected-file changes, and
+changes to benchmark programs named in command arguments. It copies the repository twice,
+runs the baseline, applies the patch only to the candidate copy, runs the candidate, then
+passes both snapshots to the evaluation gate. The original repository is never modified.
+
+Benchmark commands are executed directly without a shell, but they are still processes on
+the local machine. Only use trusted commands and pass `--allow-command-execution` explicitly;
+the disposable workspace is not an operating-system security sandbox.
+
 See [`examples/repair_experience.json`](examples/repair_experience.json) for the expected
 repair format.
 
@@ -115,6 +135,7 @@ To include code localization, wrap the trace in an analysis request:
 - `diagnosis.py` contains the deterministic, inspectable failure taxonomy engine.
 - `code_graph.py` builds and queries a lightweight Python code graph.
 - `evaluation.py` enforces tests, metric thresholds, and regression budgets.
+- `verification.py` validates patches and runs isolated before/after benchmarks.
 - `skills.py` converts validated repairs into portable YAML skills.
 - `service.py` orchestrates the Observe → Diagnose → Localize → Learn workflow.
 - `api.py` and `cli.py` are transport adapters.
@@ -146,8 +167,8 @@ uv run pytest
 ## Roadmap
 
 - **Phase 1 — Agent Debug Copilot:** trace ingestion, diagnosis, and code localization.
-- **Phase 2 — AutoFix Agent:** evaluation gates are available; sandboxed patch generation
-  and benchmark runners are next.
+- **Phase 2 — AutoFix Agent:** evaluation gates and non-destructive patch verification are
+  available; patch generation and richer benchmark adapters are next.
 - **Phase 3 — Self-Evolving Harness:** harness optimization, experience memory, and skill
   selection/evolution.
 

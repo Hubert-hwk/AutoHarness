@@ -186,6 +186,81 @@ class EvaluationResult(BaseModel):
     rejection_reasons: list[str] = Field(default_factory=list)
 
 
+class BenchmarkCommand(BaseModel):
+    """One trusted command executed without a shell inside an isolated copy."""
+
+    name: str
+    argv: list[str] = Field(min_length=1)
+    timeout_seconds: float = Field(default=300, gt=0, le=3600)
+    env: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def command_name_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("command name must not be blank")
+        return value.strip()
+
+    @field_validator("argv")
+    @classmethod
+    def arguments_must_not_be_blank(cls, value: list[str]) -> list[str]:
+        if any(not argument for argument in value):
+            raise ValueError("command arguments must not be blank")
+        return value
+
+
+class PatchVerificationPlan(BaseModel):
+    """Commands, metrics, and policy used to verify a patch candidate."""
+
+    commands: list[BenchmarkCommand] = Field(min_length=1)
+    metrics_file: str = ".autoharness-metrics.json"
+    policy: EvaluationPolicy
+    stop_on_failure: bool = True
+    protected_paths: list[str] = Field(default_factory=lambda: [".github", "tests"])
+
+    @field_validator("metrics_file")
+    @classmethod
+    def metrics_path_must_be_safe(cls, value: str) -> str:
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts or value in {"", "."}:
+            raise ValueError("metrics_file must be a safe relative file path")
+        return path.as_posix()
+
+    @field_validator("protected_paths")
+    @classmethod
+    def protected_paths_must_be_safe(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for item in value:
+            path = Path(item)
+            if path.is_absolute() or ".." in path.parts or item in {"", "."}:
+                raise ValueError("protected_paths must contain safe relative paths")
+            normalized.append(path.as_posix().rstrip("/"))
+        return normalized
+
+
+class CommandExecution(BaseModel):
+    name: str
+    argv: list[str]
+    exit_code: int
+    duration_ms: float = Field(ge=0)
+    stdout_tail: str = ""
+    stderr_tail: str = ""
+    timed_out: bool = False
+
+
+class BenchmarkRun(BaseModel):
+    snapshot: EvaluationSnapshot
+    commands: list[CommandExecution]
+
+
+class PatchVerificationResult(BaseModel):
+    accepted: bool
+    changed_paths: list[str]
+    baseline: BenchmarkRun
+    candidate: BenchmarkRun
+    evaluation: EvaluationResult
+
+
 class RepairExperience(BaseModel):
     title: str
     failure_type: FailureType

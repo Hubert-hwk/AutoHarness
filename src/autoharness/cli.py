@@ -9,8 +9,14 @@ from typing import Annotated
 import typer
 
 from autoharness.code_graph import PythonCodeGraph
-from autoharness.models import AgentTrace, EvaluationRequest, RepairExperience
+from autoharness.models import (
+    AgentTrace,
+    EvaluationRequest,
+    PatchVerificationPlan,
+    RepairExperience,
+)
 from autoharness.service import AutoHarness
+from autoharness.verification import VerificationError
 
 app = typer.Typer(no_args_is_help=True, help="Diagnose and improve AI agent systems.")
 
@@ -63,6 +69,40 @@ def evaluate(
     """Apply tests, thresholds, and regression gates to a repair candidate."""
     request = EvaluationRequest.model_validate(_load_json(evaluation_file))
     result = AutoHarness().evaluate(request.baseline, request.candidate, request.policy)
+    typer.echo(result.model_dump_json(indent=2))
+    if not result.accepted:
+        raise typer.Exit(code=2)
+
+
+@app.command("verify-patch")
+def verify_patch(
+    patch_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    plan_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    repo: Annotated[
+        Path, typer.Option("--repo", exists=True, file_okay=False, readable=True)
+    ] = Path("."),
+    allow_command_execution: Annotated[
+        bool,
+        typer.Option(
+            "--allow-command-execution",
+            help="Required acknowledgement that benchmark commands are trusted.",
+        ),
+    ] = False,
+) -> None:
+    """Verify a unified diff in disposable baseline and candidate workspaces."""
+    if not allow_command_execution:
+        typer.echo(
+            "Refusing to execute benchmark commands without --allow-command-execution",
+            err=True,
+        )
+        raise typer.Exit(code=4)
+    try:
+        patch = patch_file.read_text(encoding="utf-8")
+        plan = PatchVerificationPlan.model_validate(_load_json(plan_file))
+        result = AutoHarness().verify_patch(repo, patch, plan)
+    except (OSError, VerificationError) as exc:
+        typer.echo(f"Verification failed: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
     typer.echo(result.model_dump_json(indent=2))
     if not result.accepted:
         raise typer.Exit(code=2)

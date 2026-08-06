@@ -8,6 +8,9 @@ All notable changes to AutoHarness are documented here.
 - Enforce candidate test results, metric thresholds, and relative regression budgets.
 - Expose evaluation through the Python service, FastAPI, and CLI.
 - Add a CI-friendly non-zero exit code when the CLI rejects a candidate.
+- Add disposable baseline/candidate workspaces and non-destructive unified-diff verification.
+- Protect benchmark inputs, tests, metrics, and repository metadata from candidate changes.
+- Add trusted-command acknowledgement and machine-readable patch verification results.
 
 ## 0.1.0 - 2026-08-07
 

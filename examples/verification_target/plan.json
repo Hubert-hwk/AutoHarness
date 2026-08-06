@@ -1,0 +1,21 @@
+{
+  "commands": [
+    {
+      "name": "example benchmark",
+      "argv": ["python", "benchmark.py"],
+      "timeout_seconds": 30
+    }
+  ],
+  "metrics_file": ".autoharness-metrics.json",
+  "protected_paths": ["benchmark.py"],
+  "policy": {
+    "require_tests": true,
+    "rules": [
+      {
+        "metric": "score",
+        "direction": "higher_is_better",
+        "threshold": 1.5
+      }
+    ]
+  }
+}
