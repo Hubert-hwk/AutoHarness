@@ -24,6 +24,7 @@ from autoharness.models import (
     SkillRecommendationResult,
 )
 from autoharness.registry import SkillRecommender
+from autoharness.verification import PatchVerifier
 
 
 class AutoFixPipeline:
@@ -124,6 +125,7 @@ class AutoFixPipeline:
             dict.fromkeys(
                 [
                     *verification_plan.protected_paths,
+                    *PatchVerifier.command_input_paths(source, verification_plan),
                     *self.generator.protected_paths(source),
                 ]
             )
@@ -145,6 +147,8 @@ class AutoFixPipeline:
                 diagnosis=recommendation.diagnosis,
                 code_locations=recommendation.code_locations,
                 skill_matches=recommendation.skills.matches,
+                verification_plan=effective_plan,
+                protected_paths=protected_paths,
                 attempt_number=attempt_number,
                 previous_attempts=feedback_history,
             )
@@ -317,6 +321,9 @@ class AutoFixPipeline:
         )
 
     def _provider_name(self) -> str:
+        provider_name = getattr(self.generator, "provider_name", None)
+        if provider_name:
+            return str(provider_name)
         config = getattr(self.generator, "config", None)
         name = getattr(config, "name", None)
         return str(name or type(self.generator).__name__)

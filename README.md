@@ -25,7 +25,8 @@ pipeline that work locally without requiring an LLM or external service.
 - Explainable retrieval over the latest learned Skill versions for future failures.
 - Outcome-aware Skill ranking that conservatively incorporates accepted, rejected, and failed
   repair history from the current repository.
-- Pluggable patch generation through an isolated, JSON-in/unified-diff-out command protocol.
+- Pluggable patch generation through an isolated command protocol or the built-in OpenAI
+  Responses API provider.
 - End-to-end AutoFix orchestration from diagnosis and Skill retrieval through verification,
   optional promotion, and learning.
 - Feedback-driven AutoFix retries with structured failures, evaluation metrics, rejection
@@ -213,12 +214,14 @@ autoharness autofix TRACE.json GENERATOR.json PLAN.json \
   --apply-to-source
 ```
 
-The generator configuration is JSON. `argv` is executed directly without a shell, receives
-the generation context as JSON on standard input, writes one UTF-8 unified diff to standard
-output, and may write diagnostics to standard error:
+The generator configuration is JSON. Command configs remain the default and do not require a
+`type` field. `argv` is executed directly without a shell, receives the generation context as
+JSON on standard input, writes one UTF-8 unified diff to standard output, and may write
+diagnostics to standard error:
 
 ```json
 {
+  "type": "command",
   "name": "local-generator",
   "argv": ["python", "generator.py"],
   "timeout_seconds": 120,
@@ -226,11 +229,57 @@ output, and may write diagnostics to standard error:
 }
 ```
 
-The JSON context includes `attempt_number` and structured `previous_attempts` entries with
-the phase, candidate status, patch digest, before/after metrics, rejection reasons, and
-bounded errors. AutoHarness stores this provenance with the next candidate in the Repair
-Ledger. Once source promotion succeeds it will never retry, even if later Skill persistence
-fails, preventing a second repair from running against already-mutated source.
+Use the built-in OpenAI Responses provider without writing a wrapper program:
+
+```json
+{
+  "type": "openai",
+  "name": "openai-responses",
+  "model": "gpt-5.6-sol",
+  "api_key_env": "OPENAI_API_KEY",
+  "reasoning_effort": "medium",
+  "store": false,
+  "context_paths": ["src/agent.py", "tests/test_agent.py"]
+}
+```
+
+Set the named environment variable outside the JSON file, then explicitly acknowledge both
+trusted local benchmark execution and network generation:
+
+```bash
+autoharness autofix TRACE.json examples/verification_target/openai_generator.json PLAN.json \
+  --repo PATH \
+  --allow-command-execution \
+  --allow-network-generation
+```
+
+AutoHarness uses the official OpenAI Python SDK and the
+[Responses API](https://developers.openai.com/api/docs/guides/latest-model). The configured model
+receives the Trace, diagnosis, learned Skill matches, effective verification plan, protected paths,
+selected repository source, and structured prior-attempt feedback. `context_paths` are prioritized;
+remaining source files are discovered within configurable file, per-file, aggregate, and request
+byte limits. Virtual environments, VCS data, build output, symlinks, common credential files, common
+secret-bearing fields, and OpenAI-style key tokens are excluded or redacted. This is defense in
+depth, not a substitute for reviewing what a repository and Trace contain before allowing network
+generation.
+
+Response storage is requested off by default (`store: false`). See OpenAI's
+[API data controls](https://platform.openai.com/docs/models/default-usage-policies-by-endpoint) for
+the platform policy that applies to an account. The API key is read only from the configured
+environment variable and is never placed in the model prompt, generator JSON, candidate metadata,
+or ledger. Provider errors and configuration validation are emitted without input values and with
+key-like tokens redacted.
+
+Model output is still untrusted. AutoHarness accepts only one plain unified diff, applies the same
+path and binary checks used by deterministic verification, rejects modifications to protected or
+unprovided files, and permits new files only with `allow_new_files: true`. The normal disposable
+baseline/candidate benchmarks remain the authority on whether a patch is accepted.
+
+The generation context includes `attempt_number`, the effective verification contract, and
+structured `previous_attempts` entries with phase, candidate status, patch digest, before/after
+metrics, rejection reasons, and bounded errors. AutoHarness stores this provenance with the next
+candidate in the Repair Ledger. Once source promotion succeeds it will never retry, even if later
+Skill persistence fails, preventing a second repair against already-mutated source.
 
 By default the run record stores only a canonical SHA-256 of the input Trace. Use
 `--persist-trace` only when full Trace retention is appropriate for the repository's privacy
@@ -301,7 +350,8 @@ To include code localization, wrap the trace in an analysis request:
 - `code_graph.py` builds and queries a lightweight Python code graph.
 - `evaluation.py` enforces tests, metric thresholds, and regression budgets.
 - `verification.py` validates patches and runs isolated before/after benchmarks.
-- `generation.py` defines the provider protocol and isolated command generator.
+- `generation.py` defines the provider protocol, isolated command generator, bounded repository
+  context builder, and OpenAI Responses adapter.
 - `autofix.py` orchestrates feedback-driven Diagnose -> Retrieve -> Generate -> Verify ->
   Promote -> Learn attempts.
 - `RepairPipeline` promotes accepted candidates with stale-source detection and backups.
@@ -315,9 +365,9 @@ To include code localization, wrap the trace in an analysis request:
 - `service.py` orchestrates the Observe -> Diagnose -> Repair -> Evaluate -> Learn workflow.
 - `api.py` and `cli.py` are transport adapters.
 
-The deterministic core is intentional: it provides a measurable baseline while keeping
-generation providers replaceable. Future phases will add model-backed provider adapters,
-richer benchmark integrations, and feedback-driven harness optimization.
+The deterministic verification core is intentional: it provides a measurable authority while
+keeping generation providers replaceable. Future phases will add richer benchmark integrations,
+controlled provider experiments, and feedback-driven harness optimization.
 
 ## Development
 
@@ -344,8 +394,8 @@ uv run pytest
 - **Phase 1 - Agent Debug Copilot:** trace ingestion, diagnosis, and code localization.
 - **Phase 2 - AutoFix Agent:** evaluation, verification, guarded promotion, and repair
   history plus pluggable isolated patch generation, feedback-driven retries, and persistent run
-  auditing with interrupted-run recovery are available; model-backed providers and richer
-  benchmark adapters are next.
+  auditing with interrupted-run recovery are available. A built-in OpenAI Responses provider now
+  consumes verification and retry feedback; richer benchmark adapters are next.
 - **Phase 3 - Self-Evolving Harness:** versioned repair Skills and explainable retrieval are
   available with outcome-aware selection; causal credit assignment, controlled exploration,
   and harness optimization are next.

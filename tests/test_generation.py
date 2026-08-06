@@ -1,15 +1,45 @@
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
+import httpx
 import pytest
+from openai import OpenAI as SDKOpenAI
 
 from autoharness.diagnosis import FailureDiagnoser
-from autoharness.generation import CommandPatchGenerator, PatchGenerationError
+from autoharness.generation import (
+    CommandPatchGenerator,
+    OpenAIResponsesPatchGenerator,
+    PatchGenerationError,
+    create_patch_generator,
+    parse_patch_generator_config,
+)
 from autoharness.models import (
     AgentTrace,
+    OpenAIPatchGeneratorConfig,
     PatchGenerationContext,
     PatchGeneratorConfig,
 )
+
+
+class _FakeResponses:
+    def __init__(self, outputs: list[str | Exception]) -> None:
+        self.outputs = outputs
+        self.calls: list[dict[str, Any]] = []
+
+    def create(self, **kwargs: Any) -> SimpleNamespace:
+        self.calls.append(kwargs)
+        output = self.outputs.pop(0)
+        if isinstance(output, Exception):
+            raise output
+        return SimpleNamespace(output_text=output)
+
+
+class _FakeOpenAIClient:
+    def __init__(self, outputs: list[str | Exception]) -> None:
+        self.responses = _FakeResponses(outputs)
 
 
 def _context() -> PatchGenerationContext:
@@ -83,3 +113,274 @@ def test_command_generator_enforces_timeout(tmp_path: Path) -> None:
 
     with pytest.raises(PatchGenerationError, match="timed out"):
         generator.generate(tmp_path, _context())
+
+
+def test_openai_generator_sends_bounded_redacted_context_and_returns_patch(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "app.py").write_text("VALUE = 1\n# sk-testsecret123456\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("OPENAI_API_KEY=never-send\n", encoding="utf-8")
+    (tmp_path / ".uv-cache").mkdir()
+    (tmp_path / ".uv-cache" / "cached.py").write_text("NEVER = 'send'\n", encoding="utf-8")
+    (tmp_path / "secret_config.py").write_text("PASSWORD = 'never-send'\n", encoding="utf-8")
+    client = _FakeOpenAIClient(
+        ["--- a/app.py\r\n+++ b/app.py\r\n@@ -1 +1 @@\r\n-VALUE = 1\r\n+VALUE = 2\r\n"]
+    )
+    generator = OpenAIResponsesPatchGenerator(
+        OpenAIPatchGeneratorConfig(context_paths=["app.py", ".env"]),
+        client=client,
+    )
+    context = _context().model_copy(
+        update={
+            "trace": _context().trace.model_copy(
+                update={"metadata": {"api_key": "never-send", "owner": "test"}}
+            )
+        }
+    )
+
+    result = generator.generate(tmp_path, context)
+
+    assert result.provider == "openai-responses/gpt-5.6-sol"
+    assert "\r" not in result.patch
+    call = client.responses.calls[0]
+    assert call["model"] == "gpt-5.6-sol"
+    assert call["reasoning"] == {"effort": "medium"}
+    assert call["text"] == {"verbosity": "low"}
+    assert call["store"] is False
+    payload = json.loads(call["input"])
+    assert payload["autofix_context"]["trace"]["metadata"]["api_key"] == "[REDACTED]"
+    assert payload["repository"]["files"] == [
+        {"path": "app.py", "content": "VALUE = 1\n# [REDACTED]\n"}
+    ]
+    assert payload["repository"]["available_source_paths"] == ["app.py"]
+    assert "never-send" not in call["input"]
+    assert generator.protected_paths(tmp_path) == []
+
+
+def test_openai_generator_requires_key_before_creating_default_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    monkeypatch.delenv("AUTOHARNESS_TEST_OPENAI_KEY", raising=False)
+    generator = OpenAIResponsesPatchGenerator(
+        OpenAIPatchGeneratorConfig(api_key_env="AUTOHARNESS_TEST_OPENAI_KEY")
+    )
+
+    with pytest.raises(PatchGenerationError, match="environment variable is not set"):
+        generator.generate(tmp_path, _context())
+
+
+def test_openai_generator_redacts_provider_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    secret = "sk-providersecret123456"
+    monkeypatch.setenv("AUTOHARNESS_TEST_OPENAI_KEY", secret)
+    client = _FakeOpenAIClient(
+        [RuntimeError(f"authorization failed for {secret}; Bearer opaque-token")]
+    )
+    generator = OpenAIResponsesPatchGenerator(
+        OpenAIPatchGeneratorConfig(api_key_env="AUTOHARNESS_TEST_OPENAI_KEY"),
+        client=client,
+    )
+
+    with pytest.raises(PatchGenerationError, match=r"\[REDACTED\]") as error:
+        generator.generate(tmp_path, _context())
+    assert secret not in str(error.value)
+    assert "opaque-token" not in str(error.value)
+
+
+def test_openai_generator_rejects_missing_safe_context_and_oversized_input(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    generator = OpenAIResponsesPatchGenerator(
+        OpenAIPatchGeneratorConfig(context_paths=[".env"]),
+        client=_FakeOpenAIClient(["unused"]),
+    )
+    with pytest.raises(PatchGenerationError, match="No safe source files"):
+        generator.generate(tmp_path, _context())
+
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    oversized = _context().model_copy(
+        update={"trace": _context().trace.model_copy(update={"logs": ["x" * 5000]})}
+    )
+    generator = OpenAIResponsesPatchGenerator(
+        OpenAIPatchGeneratorConfig(max_input_bytes=4096),
+        client=_FakeOpenAIClient(["unused"]),
+    )
+    with pytest.raises(PatchGenerationError, match="input exceeds"):
+        generator.generate(tmp_path, oversized)
+
+
+@pytest.mark.parametrize(
+    ("output", "message"),
+    [
+        (SimpleNamespace(), "did not contain text output"),
+        (SimpleNamespace(output_text="explanation only"), "not a unified diff"),
+    ],
+)
+def test_openai_generator_rejects_invalid_responses(
+    tmp_path: Path, output: SimpleNamespace, message: str
+) -> None:
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    class StaticResponses:
+        def create(self, **_kwargs: Any) -> SimpleNamespace:
+            return output
+
+    generator = OpenAIResponsesPatchGenerator(
+        OpenAIPatchGeneratorConfig(),
+        client=SimpleNamespace(responses=StaticResponses()),
+    )
+    with pytest.raises(PatchGenerationError, match=message):
+        generator.generate(tmp_path, _context())
+
+
+def test_openai_generator_enforces_supplied_file_scope(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "other.py").write_text("OTHER = 1\n", encoding="utf-8")
+    patch = "--- a/other.py\n+++ b/other.py\n@@ -1 +1 @@\n-OTHER = 1\n+OTHER = 2\n"
+    generator = OpenAIResponsesPatchGenerator(
+        OpenAIPatchGeneratorConfig(context_paths=["app.py"], max_context_files=1),
+        client=_FakeOpenAIClient([patch]),
+    )
+
+    with pytest.raises(PatchGenerationError, match="outside the supplied context: other.py"):
+        generator.generate(tmp_path, _context())
+
+
+def test_openai_generator_rejects_protected_paths_before_verification(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    patch = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 2\n"
+    generator = OpenAIResponsesPatchGenerator(
+        OpenAIPatchGeneratorConfig(),
+        client=_FakeOpenAIClient([patch]),
+    )
+    context = _context().model_copy(update={"protected_paths": ["app.py"]})
+
+    with pytest.raises(PatchGenerationError, match="modifies protected path: app.py"):
+        generator.generate(tmp_path, context)
+
+
+def test_openai_generator_allows_new_files_only_when_configured(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    patch = "--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+VALUE = 2\n"
+    denied = OpenAIResponsesPatchGenerator(
+        OpenAIPatchGeneratorConfig(),
+        client=_FakeOpenAIClient([patch]),
+    )
+    with pytest.raises(PatchGenerationError, match="outside the supplied context: new.py"):
+        denied.generate(tmp_path, _context())
+
+    allowed = OpenAIResponsesPatchGenerator(
+        OpenAIPatchGeneratorConfig(allow_new_files=True),
+        client=_FakeOpenAIClient([patch]),
+    )
+    assert "+++ b/new.py" in allowed.generate(tmp_path, _context()).patch
+
+
+def test_openai_generator_builds_official_client_from_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    secret = "sk-clientsecret123456"
+    monkeypatch.setenv("AUTOHARNESS_TEST_OPENAI_KEY", secret)
+    captured: dict[str, Any] = {}
+
+    class FakeSDKClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+            self.responses = _FakeResponses(
+                ["--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 2\n"]
+            )
+
+    monkeypatch.setattr("autoharness.generation.OpenAI", FakeSDKClient)
+    generator = OpenAIResponsesPatchGenerator(
+        OpenAIPatchGeneratorConfig(
+            api_key_env="AUTOHARNESS_TEST_OPENAI_KEY",
+            base_url="https://api.example.test/v1",
+            timeout_seconds=42,
+            max_retries=1,
+        )
+    )
+
+    generator.generate(tmp_path, _context())
+
+    assert captured == {
+        "api_key": secret,
+        "base_url": "https://api.example.test/v1",
+        "timeout": 42,
+        "max_retries": 1,
+    }
+
+
+def test_openai_generator_round_trips_through_official_sdk_without_network(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    captured: dict[str, Any] = {}
+    patch = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 2\n"
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["authorization"] = request.headers.get("authorization")
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_test",
+                "object": "response",
+                "created_at": 0,
+                "status": "completed",
+                "model": "gpt-test",
+                "output": [
+                    {
+                        "id": "msg_test",
+                        "type": "message",
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": patch,
+                                "annotations": [],
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+    transport = httpx.MockTransport(respond)
+    with httpx.Client(transport=transport) as http_client:
+        client = SDKOpenAI(
+            api_key="sdk-test-key",
+            base_url="https://api.example.test/v1",
+            http_client=http_client,
+            max_retries=0,
+        )
+        generator = OpenAIResponsesPatchGenerator(
+            OpenAIPatchGeneratorConfig(model="gpt-test"),
+            client=client,
+        )
+        result = generator.generate(tmp_path, _context())
+
+    assert result.patch == patch
+    assert captured["path"] == "/v1/responses"
+    assert captured["authorization"] == "Bearer sdk-test-key"
+    assert captured["body"]["model"] == "gpt-test"
+    assert captured["body"]["store"] is False
+    assert isinstance(captured["body"]["input"], str)
+
+
+def test_generator_config_factory_preserves_command_compatibility() -> None:
+    legacy = parse_patch_generator_config(
+        {"argv": [sys.executable, "generator.py"], "legacy_extra": True}
+    )
+    openai_config = parse_patch_generator_config({"type": "openai", "model": "gpt-test"})
+
+    assert isinstance(legacy, PatchGeneratorConfig)
+    assert isinstance(create_patch_generator(legacy), CommandPatchGenerator)
+    assert isinstance(openai_config, OpenAIPatchGeneratorConfig)
+    assert isinstance(create_patch_generator(openai_config), OpenAIResponsesPatchGenerator)
+    with pytest.raises(ValueError, match="Unknown patch generator type"):
+        parse_patch_generator_config({"type": "unknown"})
+    with pytest.raises(ValueError, match="safe relative paths"):
+        OpenAIPatchGeneratorConfig(context_paths=["../secret.py"])

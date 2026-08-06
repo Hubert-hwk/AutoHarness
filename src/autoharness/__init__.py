@@ -1,5 +1,6 @@
 """AutoHarness public package interface."""
 
+from autoharness.generation import CommandPatchGenerator, OpenAIResponsesPatchGenerator
 from autoharness.models import (
     AgentTrace,
     AnalysisResult,
@@ -13,6 +14,8 @@ from autoharness.models import (
     EvaluationResult,
     EvolutionPipelineResult,
     FailureDiagnosis,
+    OpenAIPatchGeneratorConfig,
+    PatchGeneratorConfig,
     PatchPromotionResult,
     PatchVerificationResult,
     RepairPipelineResult,
@@ -32,13 +35,17 @@ __all__ = [
     "AutoFixRunAttemptRecord",
     "AutoFixRunRecord",
     "AutoFixRunStatus",
+    "CommandPatchGenerator",
     "EvaluationResult",
     "EvolutionPipelineResult",
     "FailureDiagnosis",
+    "OpenAIPatchGeneratorConfig",
+    "OpenAIResponsesPatchGenerator",
+    "PatchGeneratorConfig",
     "PatchPromotionResult",
     "PatchVerificationResult",
     "RepairPipelineResult",
     "SkillRecommendationResult",
     "SkillOutcomeStats",
 ]
-__version__ = "0.9.0"
+__version__ = "0.10.0"

@@ -2,6 +2,17 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.10.0 - 2026-08-07
+
+- Add a built-in OpenAI Responses API patch generator using the official Python SDK.
+- Select command or OpenAI providers from backward-compatible tagged JSON configuration.
+- Send bounded source context, the effective verification contract, and retry feedback to models.
+- Redact common secret-bearing Trace fields, source tokens, SDK errors, and validation inputs.
+- Require a separate CLI acknowledgement before Trace or source context may leave the machine.
+- Enforce model patches against supplied files and protected paths before benchmark execution.
+- Keep response storage disabled by default and make new-file generation explicitly opt-in.
+- Add mocked SDK, AutoFix retry, CLI privacy, scope, and configuration compatibility tests.
+
 ## 0.9.0 - 2026-08-07
 
 - Add heartbeat leases for active AutoFix runs and refresh them between pipeline phases.

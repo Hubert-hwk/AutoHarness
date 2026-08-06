@@ -1,11 +1,14 @@
+import json
 import sqlite3
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from autoharness.autofix import AutoFixPipeline
-from autoharness.generation import CommandPatchGenerator
+from autoharness.generation import CommandPatchGenerator, OpenAIResponsesPatchGenerator
 from autoharness.ledger import RepairLedger
 from autoharness.models import (
     AgentTrace,
@@ -19,6 +22,7 @@ from autoharness.models import (
     FailureType,
     MetricDirection,
     MetricRule,
+    OpenAIPatchGeneratorConfig,
     PatchGeneratorConfig,
     PatchVerificationPlan,
     Skill,
@@ -344,6 +348,50 @@ def test_autofix_retries_invalid_patch_and_audits_failed_candidate(tmp_path: Pat
         CandidateStatus.LEARNED,
     ]
     assert records[0].metadata["failed_from_status"] == CandidateStatus.PROPOSED
+
+
+def test_autofix_openai_provider_uses_evaluation_feedback_on_retry(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "repository")
+    ledger = RepairLedger(tmp_path / "ledger.db")
+
+    class AdaptiveResponses:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def create(self, **kwargs: Any) -> SimpleNamespace:
+            self.calls.append(kwargs)
+            replacement = "0" if len(self.calls) == 1 else "2"
+            return SimpleNamespace(
+                output_text=(f"--- a/value.txt\n+++ b/value.txt\n@@ -1 +1 @@\n-1\n+{replacement}\n")
+            )
+
+    responses = AdaptiveResponses()
+    client = SimpleNamespace(responses=responses)
+    generator = OpenAIResponsesPatchGenerator(
+        OpenAIPatchGeneratorConfig(
+            name="model-test",
+            model="gpt-test",
+            context_paths=["value.txt"],
+        ),
+        client=client,
+    )
+
+    result = AutoFixPipeline(generator, ledger, tmp_path / "skills").run(
+        _trace(), repository, _plan(), max_attempts=2
+    )
+
+    assert result.run.generator_provider == "model-test/gpt-test"
+    assert result.run.status == AutoFixRunStatus.SUCCEEDED
+    assert [attempt.feedback.phase for attempt in result.attempts] == [
+        AutoFixPhase.EVALUATION,
+        AutoFixPhase.COMPLETE,
+    ]
+    second_context = json.loads(responses.calls[1]["input"])["autofix_context"]
+    assert second_context["attempt_number"] == 2
+    assert second_context["verification_plan"]["policy"]["rules"][0]["metric"] == "score"
+    assert "benchmark.py" in second_context["protected_paths"]
+    assert second_context["previous_attempts"][0]["phase"] == "evaluation"
+    assert second_context["previous_attempts"][0]["metrics_after"] == {"score": 0.0}
 
 
 def test_autofix_never_retries_after_source_was_promoted(

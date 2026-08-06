@@ -256,6 +256,70 @@ def test_autofix_cli_runs_full_pipeline(tmp_path: Path) -> None:
     assert "Unknown AutoFix run" in missing.output
 
 
+def test_autofix_openai_cli_requires_network_acknowledgement(tmp_path: Path) -> None:
+    _, plan = _verification_files(tmp_path)
+    generator = tmp_path / "openai-generator.json"
+    generator.write_text(
+        json.dumps(
+            {
+                "type": "openai",
+                "model": "gpt-test",
+                "context_paths": ["value.txt"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trace = tmp_path / "trace.json"
+    trace.write_text(json.dumps({"task": "Fix the low value"}), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "autofix",
+            str(trace),
+            str(generator),
+            str(plan),
+            "--repo",
+            str(tmp_path),
+            "--allow-command-execution",
+        ],
+    )
+
+    assert result.exit_code == 6
+    assert "--allow-network-generation" in result.output
+    assert not (tmp_path / ".autoharness" / "ledger.db").exists()
+
+
+def test_autofix_generator_config_errors_do_not_echo_secret_values(tmp_path: Path) -> None:
+    _, plan = _verification_files(tmp_path)
+    secret = "sk-misplacedsecret123456"
+    generator = tmp_path / "invalid-generator.json"
+    generator.write_text(
+        json.dumps({"type": "openai", "api_key": secret}),
+        encoding="utf-8",
+    )
+    trace = tmp_path / "trace.json"
+    trace.write_text(json.dumps({"task": "Fix the low value"}), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "autofix",
+            str(trace),
+            str(generator),
+            str(plan),
+            "--repo",
+            str(tmp_path),
+            "--allow-command-execution",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "Invalid patch generator configuration" in result.output
+    assert "extra_forbidden" in result.output
+    assert secret not in result.output
+
+
 def test_autofix_recover_cli_interrupts_stale_run(tmp_path: Path) -> None:
     ledger_path = tmp_path / "ledger.db"
     ledger = RepairLedger(ledger_path)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -414,6 +414,7 @@ class SkillRecommendationResult(BaseModel):
 
 
 class PatchGeneratorConfig(BaseModel):
+    type: Literal["command"] = "command"
     name: str = "command"
     argv: list[str] = Field(min_length=1)
     timeout_seconds: float = Field(default=300, gt=0, le=3600)
@@ -433,6 +434,56 @@ class PatchGeneratorConfig(BaseModel):
         if any(not argument for argument in value):
             raise ValueError("generator arguments must not be blank")
         return value
+
+
+class OpenAIPatchGeneratorConfig(BaseModel):
+    """Configuration for the built-in OpenAI Responses API patch provider."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["openai"] = "openai"
+    name: str = "openai-responses"
+    model: str = "gpt-5.6-sol"
+    api_key_env: str = "OPENAI_API_KEY"
+    base_url: str | None = None
+    timeout_seconds: float = Field(default=300, gt=0, le=3600)
+    max_retries: int = Field(default=2, ge=0, le=5)
+    max_output_tokens: int = Field(default=20_000, ge=256, le=128_000)
+    max_patch_bytes: int = Field(default=2 * 1024 * 1024, ge=1, le=2 * 1024 * 1024)
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "medium"
+    text_verbosity: Literal["low", "medium", "high"] = "low"
+    store: bool = False
+    allow_new_files: bool = False
+    context_paths: list[str] = Field(default_factory=list, max_length=100)
+    max_context_files: int = Field(default=24, ge=1, le=100)
+    max_scan_files: int = Field(default=10_000, ge=100, le=100_000)
+    max_discovered_paths: int = Field(default=2_000, ge=100, le=10_000)
+    max_file_bytes: int = Field(default=64 * 1024, ge=1, le=1024 * 1024)
+    max_context_bytes: int = Field(default=256 * 1024, ge=1024, le=4 * 1024 * 1024)
+    max_input_bytes: int = Field(default=1024 * 1024, ge=4096, le=8 * 1024 * 1024)
+
+    @field_validator("name", "model", "api_key_env")
+    @classmethod
+    def openai_strings_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("OpenAI generator values must not be blank")
+        return value.strip()
+
+    @field_validator("context_paths")
+    @classmethod
+    def context_paths_must_be_relative_files(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for item in value:
+            path = Path(item)
+            if (
+                not item
+                or path.is_absolute()
+                or ".." in path.parts
+                or (path.parts and ":" in path.parts[0])
+            ):
+                raise ValueError("OpenAI context paths must be safe relative paths")
+            normalized.append(path.as_posix())
+        return list(dict.fromkeys(normalized))
 
 
 class AutoFixAttemptFeedback(BaseModel):
@@ -456,6 +507,8 @@ class PatchGenerationContext(BaseModel):
     diagnosis: FailureDiagnosis
     code_locations: list[CodeLocation] = Field(default_factory=list)
     skill_matches: list[SkillMatch] = Field(default_factory=list)
+    verification_plan: PatchVerificationPlan | None = None
+    protected_paths: list[str] = Field(default_factory=list)
     attempt_number: int = Field(default=1, ge=1, le=10)
     previous_attempts: list[AutoFixAttemptFeedback] = Field(default_factory=list)
 

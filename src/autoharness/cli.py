@@ -7,16 +7,22 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from pydantic import ValidationError
 
 from autoharness.code_graph import PythonCodeGraph
-from autoharness.generation import CommandPatchGenerator, PatchGenerationError
+from autoharness.generation import (
+    GeneratorConfig,
+    PatchGenerationError,
+    create_patch_generator,
+    parse_patch_generator_config,
+)
 from autoharness.ledger import LedgerError, RepairLedger
 from autoharness.models import (
     AgentTrace,
     AutoFixRunStatus,
     CandidateStatus,
     EvaluationRequest,
-    PatchGeneratorConfig,
+    OpenAIPatchGeneratorConfig,
     PatchVerificationPlan,
     RepairExperience,
 )
@@ -32,6 +38,18 @@ def _load_json(path: Path) -> object:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise typer.BadParameter(f"Cannot read JSON from {path}: {exc}") from exc
+
+
+def _load_generator_config(path: Path) -> GeneratorConfig:
+    try:
+        return parse_patch_generator_config(_load_json(path))
+    except ValidationError as exc:
+        safe_errors = exc.errors(include_url=False, include_input=False)
+        raise typer.BadParameter(
+            f"Invalid patch generator configuration: {json.dumps(safe_errors)}"
+        ) from exc
+    except ValueError as exc:
+        raise typer.BadParameter(f"Invalid patch generator configuration: {exc}") from exc
 
 
 @app.command()
@@ -351,6 +369,13 @@ def autofix(
     skill_limit: Annotated[int, typer.Option("--skill-limit", min=1, max=50)] = 5,
     max_attempts: Annotated[int, typer.Option("--max-attempts", min=1, max=10)] = 3,
     allow_command_execution: Annotated[bool, typer.Option("--allow-command-execution")] = False,
+    allow_network_generation: Annotated[
+        bool,
+        typer.Option(
+            "--allow-network-generation",
+            help="Allow a network provider to send the Trace and selected source context.",
+        ),
+    ] = False,
     apply_to_source: Annotated[bool, typer.Option("--apply-to-source")] = False,
     persist_trace: Annotated[
         bool,
@@ -381,12 +406,22 @@ def autofix(
     skill_directory = skills or source / ".autoharness" / "skills"
     try:
         trace = AgentTrace.model_validate(_load_json(trace_file))
-        generator_config = PatchGeneratorConfig.model_validate(_load_json(generator_file))
+        generator_config = _load_generator_config(generator_file)
+        if (
+            isinstance(generator_config, OpenAIPatchGeneratorConfig)
+            and not allow_network_generation
+        ):
+            typer.echo(
+                "Refusing to send Trace and source context to a network provider without "
+                "--allow-network-generation",
+                err=True,
+            )
+            raise typer.Exit(code=6)
         verification_plan = PatchVerificationPlan.model_validate(_load_json(plan_file))
         result = AutoHarness().autofix(
             trace,
             source,
-            CommandPatchGenerator(generator_config),
+            create_patch_generator(generator_config),
             verification_plan,
             ledger_path=ledger_path,
             skill_directory=skill_directory,

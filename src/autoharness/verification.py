@@ -324,7 +324,7 @@ class PatchVerifier:
         source = Path(repository).expanduser().resolve()
         if not source.is_dir():
             raise VerificationError(f"Repository path is not a directory: {source}")
-        protected_paths = [*plan.protected_paths, *self._command_input_paths(source, plan)]
+        protected_paths = [*plan.protected_paths, *self.command_input_paths(source, plan)]
         changed_paths = self.patch_validator.inspect(
             patch,
             protected_paths,
@@ -356,7 +356,7 @@ class PatchVerifier:
         )
 
     @staticmethod
-    def _command_input_paths(source: Path, plan: PatchVerificationPlan) -> list[str]:
+    def command_input_paths(source: Path, plan: PatchVerificationPlan) -> list[str]:
         """Protect relative files named by benchmark commands from candidate edits."""
         protected: list[str] = []
         for command in plan.commands:
@@ -389,7 +389,7 @@ class PatchPromoter:
         if not source.is_dir():
             raise VerificationError(f"Repository path is not a directory: {source}")
 
-        protected_paths = [*plan.protected_paths, *PatchVerifier._command_input_paths(source, plan)]
+        protected_paths = [*plan.protected_paths, *PatchVerifier.command_input_paths(source, plan)]
         changed_paths = self.patch_validator.inspect(
             patch,
             protected_paths,
