@@ -1,0 +1,12 @@
+{
+  "task": "Fix an incorrect response with a low benchmark score",
+  "events": [
+    {
+      "kind": "response",
+      "name": "answer_generator",
+      "status": "failure",
+      "error": "incorrect answer"
+    }
+  ],
+  "feedback": "The benchmark still has a low score."
+}

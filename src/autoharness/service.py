@@ -16,12 +16,16 @@ from autoharness.models import (
     EvaluationResult,
     EvaluationSnapshot,
     EvolutionPipelineResult,
+    FailureType,
     PatchVerificationPlan,
     PatchVerificationResult,
     RepairExperience,
     RepairPipelineResult,
     Skill,
+    SkillQuery,
+    SkillRecommendationResult,
 )
+from autoharness.registry import SkillRegistry
 from autoharness.skills import SkillGenerator
 from autoharness.verification import PatchVerifier, RepairPipeline
 
@@ -97,3 +101,53 @@ class AutoHarness:
     ) -> EvolutionPipelineResult:
         pipeline = EvolutionPipeline(RepairLedger(ledger_path), skill_directory)
         return pipeline.run(repository, patch, plan, experience, promote=promote)
+
+    def recommend_skills(
+        self,
+        trace: AgentTrace,
+        skill_directory: str | Path,
+        *,
+        repository_path: str | Path | None = None,
+        limit: int = 5,
+        same_failure_only: bool = True,
+    ) -> SkillRecommendationResult:
+        diagnosis = self.diagnoser.diagnose(trace)
+        locations = []
+        if repository_path is not None:
+            graph = PythonCodeGraph(repository_path)
+            graph.build()
+            locations = graph.locate(diagnosis, limit=8)
+        text = " ".join(
+            [
+                trace.task,
+                *trace.logs,
+                trace.feedback or "",
+                diagnosis.summary,
+                *diagnosis.likely_causes,
+                *diagnosis.search_terms,
+                *(evidence.excerpt for evidence in diagnosis.evidence),
+            ]
+        )
+        components = list(
+            dict.fromkeys(
+                value
+                for location in locations
+                for value in (location.symbol, Path(location.path).stem)
+            )
+        )
+        skills = SkillRegistry(skill_directory).search(
+            SkillQuery(
+                failure_type=diagnosis.failure_type,
+                text=text,
+                components=components,
+                limit=limit,
+                same_failure_only=(
+                    same_failure_only and diagnosis.failure_type != FailureType.UNKNOWN
+                ),
+            )
+        )
+        return SkillRecommendationResult(
+            diagnosis=diagnosis,
+            code_locations=locations,
+            skills=skills,
+        )

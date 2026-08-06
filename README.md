@@ -22,6 +22,7 @@ pipeline that work locally without requiring an LLM or external service.
   regression budgets.
 - Non-destructive patch verification in separate disposable baseline and candidate copies.
 - Guarded source promotion, persistent repair history, and versioned skill evolution.
+- Explainable retrieval over the latest learned Skill versions for future failures.
 - CLI and FastAPI interfaces backed by the same application service.
 
 ```text
@@ -148,6 +149,20 @@ autoharness repair-history --ledger PATH/.autoharness/ledger.db
 autoharness repair-events CANDIDATE_ID --ledger PATH/.autoharness/ledger.db
 ```
 
+Retrieve relevant repair experience for a new trace:
+
+```bash
+autoharness recommend-skills TRACE.json \
+  --skills PATH/.autoharness/skills \
+  --repo PATH
+```
+
+Recommendations are ranked using failure type, trigger phrases and tokens, affected code
+components, Skill content, and version. Every match includes its score and reasons. Invalid
+YAML is reported without hiding valid Skills, and older versions are ignored while remaining
+on disk for auditability. Use `--cross-failure` to explicitly allow experience from other
+failure categories; unknown diagnoses automatically fall back to cross-category retrieval.
+
 See [`examples/repair_experience.json`](examples/repair_experience.json) for the expected
 repair format.
 
@@ -180,6 +195,7 @@ To include code localization, wrap the trace in an analysis request:
 - `ledger.py` persists the repair state machine and append-only lifecycle events in SQLite.
 - `evolution.py` orchestrates verification, promotion, history, and versioned Skill learning.
 - `skills.py` converts validated repairs into portable YAML skills.
+- `registry.py` safely indexes and ranks the latest learned Skill versions.
 - `service.py` orchestrates the Observe -> Diagnose -> Repair -> Evaluate -> Learn workflow.
 - `api.py` and `cli.py` are transport adapters.
 
@@ -212,8 +228,9 @@ uv run pytest
 - **Phase 1 - Agent Debug Copilot:** trace ingestion, diagnosis, and code localization.
 - **Phase 2 - AutoFix Agent:** evaluation, verification, guarded promotion, and repair
   history are available; patch generation and richer benchmark adapters are next.
-- **Phase 3 - Self-Evolving Harness:** versioned repair Skills are available; automatic
-  skill retrieval, harness optimization, and experience selection are next.
+- **Phase 3 - Self-Evolving Harness:** versioned repair Skills and explainable retrieval are
+  available; patch generation, harness optimization, and outcome-aware experience selection
+  are next.
 
 ## License
 

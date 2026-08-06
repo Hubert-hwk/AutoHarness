@@ -344,3 +344,36 @@ class EvolutionPipelineResult(BaseModel):
     repair: RepairPipelineResult
     skill: Skill | None = None
     skill_path: str | None = None
+
+
+class SkillQuery(BaseModel):
+    failure_type: FailureType | None = None
+    text: str = ""
+    components: list[str] = Field(default_factory=list)
+    limit: int = Field(default=5, ge=1, le=50)
+    same_failure_only: bool = True
+
+
+class SkillLoadIssue(BaseModel):
+    path: str
+    error: str
+
+
+class SkillMatch(BaseModel):
+    skill: Skill
+    path: str
+    score: float = Field(ge=0)
+    reasons: list[str]
+
+
+class SkillSearchResult(BaseModel):
+    matches: list[SkillMatch]
+    indexed_skills: int
+    ignored_older_versions: int = 0
+    invalid_files: list[SkillLoadIssue] = Field(default_factory=list)
+
+
+class SkillRecommendationResult(BaseModel):
+    diagnosis: FailureDiagnosis
+    code_locations: list[CodeLocation] = Field(default_factory=list)
+    skills: SkillSearchResult

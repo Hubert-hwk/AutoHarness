@@ -144,3 +144,26 @@ def test_evolve_patch_cli_records_and_learns(tmp_path: Path) -> None:
     history = CliRunner().invoke(app, ["repair-history", "--ledger", str(ledger)])
     assert history.exit_code == 0
     assert '"status": "learned"' in history.output
+    trace = tmp_path / "trace.json"
+    trace.write_text(
+        json.dumps(
+            {
+                "task": "Fix an incorrect answer with a low score",
+                "events": [
+                    {
+                        "kind": "response",
+                        "status": "failure",
+                        "error": "incorrect answer",
+                    }
+                ],
+                "feedback": "low score",
+            }
+        ),
+        encoding="utf-8",
+    )
+    recommendation = CliRunner().invoke(
+        app,
+        ["recommend-skills", str(trace), "--skills", str(skills)],
+    )
+    assert recommendation.exit_code == 0
+    assert '"name": "improve_score"' in recommendation.output

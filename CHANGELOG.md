@@ -2,6 +2,13 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.4.0 - 2026-08-07
+
+- Add a safe YAML Skill Registry with invalid-file diagnostics and resource limits.
+- Deduplicate learned experience to the latest immutable version of each Skill.
+- Rank Skills using failure type, triggers, content, affected components, and version.
+- Add diagnosis-driven `recommend-skills` with explainable matches and cross-failure fallback.
+
 ## 0.3.0 - 2026-08-07
 
 - Add a SQLite Repair Ledger with an enforced candidate state machine and event history.

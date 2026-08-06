@@ -7,15 +7,20 @@ import yaml
 from autoharness.evolution import EvolutionPipeline
 from autoharness.ledger import RepairLedger
 from autoharness.models import (
+    AgentTrace,
     BenchmarkCommand,
     CandidateStatus,
     EvaluationPolicy,
+    EventKind,
+    EventStatus,
     FailureType,
     MetricDirection,
     MetricRule,
     PatchVerificationPlan,
     RepairExperience,
+    TraceEvent,
 )
+from autoharness.service import AutoHarness
 from autoharness.verification import VerificationError
 
 
@@ -93,6 +98,22 @@ def test_evolution_pipeline_records_promotes_and_learns(tmp_path: Path) -> None:
         CandidateStatus.PROMOTED,
         CandidateStatus.LEARNED,
     ]
+    recommendation = AutoHarness().recommend_skills(
+        AgentTrace(
+            task="Fix a low score and incorrect answer",
+            events=[
+                TraceEvent(
+                    kind=EventKind.RESPONSE,
+                    status=EventStatus.FAILURE,
+                    error="incorrect answer",
+                )
+            ],
+            feedback="The benchmark has a low score",
+        ),
+        skills,
+    )
+    assert recommendation.skills.matches[0].skill.name == "improve_score"
+    assert recommendation.skills.matches[0].skill.version == 1
 
 
 def test_evolution_pipeline_records_rejected_candidate(tmp_path: Path) -> None:

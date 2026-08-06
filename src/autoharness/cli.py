@@ -17,6 +17,7 @@ from autoharness.models import (
     PatchVerificationPlan,
     RepairExperience,
 )
+from autoharness.registry import SkillRegistryError
 from autoharness.service import AutoHarness
 from autoharness.verification import VerificationError
 
@@ -224,6 +225,36 @@ def repair_events(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=3) from exc
     typer.echo(json.dumps([item.model_dump(mode="json") for item in events], indent=2))
+
+
+@app.command("recommend-skills")
+def recommend_skills(
+    trace_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    skills: Annotated[Path, typer.Option("--skills", exists=True, file_okay=False)],
+    repo: Annotated[
+        Path | None,
+        typer.Option("--repo", exists=True, file_okay=False, readable=True),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=50)] = 5,
+    cross_failure: Annotated[
+        bool,
+        typer.Option("--cross-failure", help="Allow matches from other failure types."),
+    ] = False,
+) -> None:
+    """Diagnose a trace and retrieve relevant learned repair Skills."""
+    try:
+        trace = AgentTrace.model_validate(_load_json(trace_file))
+        result = AutoHarness().recommend_skills(
+            trace,
+            skills,
+            repository_path=repo,
+            limit=limit,
+            same_failure_only=not cross_failure,
+        )
+    except (OSError, SkillRegistryError, ValueError) as exc:
+        typer.echo(f"Skill recommendation failed: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    typer.echo(result.model_dump_json(indent=2))
 
 
 @app.command()
