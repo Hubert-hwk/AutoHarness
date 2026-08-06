@@ -28,7 +28,9 @@ from autoharness.models import (
     ProviderSelection,
     RepairPipelineResult,
     SkillAblation,
+    SkillAblationDecision,
     SkillComparisonMode,
+    SkillContextBalance,
     SkillHealth,
     SkillHealthBasis,
     SkillHealthStatus,
@@ -64,11 +66,13 @@ __all__ = [
     "ProviderSelection",
     "RepairPipelineResult",
     "SkillAblation",
+    "SkillAblationDecision",
     "SkillComparisonMode",
+    "SkillContextBalance",
     "SkillHealth",
     "SkillHealthBasis",
     "SkillHealthStatus",
     "SkillRecommendationResult",
     "SkillOutcomeStats",
 ]
-__version__ = "0.18.0"
+__version__ = "0.19.0"

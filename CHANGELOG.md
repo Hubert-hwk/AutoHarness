@@ -2,6 +2,19 @@
 
 All notable changes to AutoHarness are documented here.
 
+## 0.19.0 - 2026-08-07
+
+- Schedule Skill controls only when the same context has more exposed runs than withheld runs.
+- Treat the first scheduled occurrence of a context as exposure warm-up instead of creating a
+  control-only sample that cannot contribute to a matched comparison.
+- Prioritize the largest matched-context control deficit and rotate deterministically across ties.
+- Keep quarantine recovery probes outside the control pool while recording why ablation was skipped.
+- Report run-deduplicated exposed, control, paired, deficit, and surplus counts for each Skill and
+  context through the Repair Ledger.
+- Persist typed ablation decisions and pre-selection balance provenance with every candidate attempt.
+- Validate derived balance and selection invariants and cover warm-up, pairing, prioritization,
+  probe preservation, retry deduplication, and audit metadata.
+
 ## 0.18.0 - 2026-08-07
 
 - Generate stable SHA-256 Skill context fingerprints from normalized task, diagnosis, and localized

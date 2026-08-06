@@ -515,8 +515,65 @@ class SkillAblation(BaseModel):
     path: str
     original_rank: int = Field(ge=1)
     experiment_index: int = Field(ge=0)
+    exposed_runs_before: int = Field(default=0, ge=0)
+    control_runs_before: int = Field(default=0, ge=0)
+    control_deficit_before: int = Field(default=0, ge=0)
+    selection_policy: Literal["matched_context_deficit"] = "matched_context_deficit"
     health: SkillHealth | None = None
     reason: str
+
+    @model_validator(mode="after")
+    def validate_context_balance(self) -> Self:
+        expected_deficit = max(self.exposed_runs_before - self.control_runs_before, 0)
+        if self.control_deficit_before != expected_deficit:
+            raise ValueError("control deficit must match the pre-ablation run balance")
+        return self
+
+
+class SkillAblationDecision(BaseModel):
+    repository_run_sequence: int = Field(ge=1)
+    interval: int = Field(ge=1)
+    experiment_index: int = Field(ge=0)
+    context_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    eligible_skills: int = Field(ge=0)
+    control_deficit_skills: int = Field(ge=0)
+    selected_skill_name: str | None = None
+    selected_skill_version: int | None = Field(default=None, ge=1)
+    reason: str
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> Self:
+        if self.control_deficit_skills > self.eligible_skills:
+            raise ValueError("control-deficit Skills cannot exceed eligible Skills")
+        selected = self.selected_skill_name is not None
+        if selected != (self.selected_skill_version is not None):
+            raise ValueError("selected Skill name and version must be recorded together")
+        if selected and self.control_deficit_skills == 0:
+            raise ValueError("a selected Skill requires a positive control-deficit pool")
+        return self
+
+
+class SkillContextBalance(BaseModel):
+    skill_name: str
+    skill_version: int = Field(ge=1)
+    context_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    exposed_runs: int = Field(ge=0)
+    control_runs: int = Field(ge=0)
+    paired_runs: int = Field(ge=0)
+    control_deficit: int = Field(ge=0)
+    control_surplus: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_derived_counts(self) -> Self:
+        expected = (
+            min(self.exposed_runs, self.control_runs),
+            max(self.exposed_runs - self.control_runs, 0),
+            max(self.control_runs - self.exposed_runs, 0),
+        )
+        actual = (self.paired_runs, self.control_deficit, self.control_surplus)
+        if actual != expected:
+            raise ValueError("context balance counts must be derived from exposed and control runs")
+        return self
 
 
 class SkillRecommendationResult(BaseModel):
@@ -525,6 +582,7 @@ class SkillRecommendationResult(BaseModel):
     skills: SkillSearchResult
     withheld_skills: list[SkillAblation] = Field(default_factory=list)
     context_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    ablation_decision: SkillAblationDecision | None = None
 
 
 class PatchGeneratorConfig(BaseModel):

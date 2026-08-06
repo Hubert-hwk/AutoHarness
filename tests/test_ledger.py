@@ -251,6 +251,57 @@ def test_ledger_does_not_treat_invalid_context_fingerprints_as_legacy(tmp_path: 
     assert stats.comparison_control_observations == 0
 
 
+def test_ledger_reports_run_deduplicated_skill_context_balances(tmp_path: Path) -> None:
+    ledger = RepairLedger(tmp_path / "ledger.db")
+    context = "c" * 64
+    skill = {"name": "balanced_repair", "version": 1}
+    repeated_metadata = {
+        "autofix_run_id": "exposed-run",
+        "skill_context_fingerprint": context,
+        "retrieved_skills": [skill],
+    }
+    for index, status in enumerate((CandidateStatus.REJECTED, CandidateStatus.VERIFIED), start=1):
+        candidate = ledger.propose(
+            title="Repeated exposure",
+            repository_path=tmp_path,
+            patch_sha256=f"{index:064x}",
+            failure_type=FailureType.REASONING,
+            metadata=repeated_metadata,
+        )
+        ledger.transition(candidate.candidate_id, status)
+    control = ledger.propose(
+        title="Matched control",
+        repository_path=tmp_path,
+        patch_sha256="3" * 64,
+        failure_type=FailureType.REASONING,
+        metadata={"skill_context_fingerprint": context, "withheld_skills": [skill]},
+    )
+    ledger.transition(control.candidate_id, CandidateStatus.VERIFIED)
+    unrelated = ledger.propose(
+        title="Other context",
+        repository_path=tmp_path,
+        patch_sha256="4" * 64,
+        failure_type=FailureType.REASONING,
+        metadata={"skill_context_fingerprint": "d" * 64, "retrieved_skills": [skill]},
+    )
+    ledger.transition(unrelated.candidate_id, CandidateStatus.VERIFIED)
+
+    balance = ledger.skill_context_balances(
+        context,
+        repository_path=tmp_path,
+        failure_type=FailureType.REASONING,
+    )[("balanced_repair", 1)]
+
+    assert balance.exposed_runs == 1
+    assert balance.control_runs == 1
+    assert balance.paired_runs == 1
+    assert balance.control_deficit == 0
+    assert balance.control_surplus == 0
+
+    with pytest.raises(ValueError, match="64-character"):
+        ledger.skill_context_balances("invalid", repository_path=tmp_path)
+
+
 def test_ledger_deduplicates_skill_evidence_across_autofix_retries(tmp_path: Path) -> None:
     ledger = RepairLedger(tmp_path / "ledger.db")
     metadata = {

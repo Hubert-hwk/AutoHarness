@@ -27,6 +27,7 @@ from autoharness.models import (
     RepairCandidateEvent,
     RepairCandidateRecord,
     SkillComparisonMode,
+    SkillContextBalance,
     SkillOutcomeStats,
 )
 
@@ -959,6 +960,79 @@ class RepairLedger:
                 comparison_control_posterior_success_rate=round(comparison_control_posterior, 4),
             )
         return results
+
+    def skill_context_balances(
+        self,
+        context_fingerprint: str,
+        *,
+        repository_path: str | Path | None = None,
+        failure_type: FailureType | None = None,
+        limit: int = 5000,
+    ) -> dict[tuple[str, int], SkillContextBalance]:
+        """Count run-deduplicated exposed/control arms for one valid repair context."""
+        normalized_context = context_fingerprint.casefold()
+        if len(normalized_context) != 64 or any(
+            character not in "0123456789abcdef" for character in normalized_context
+        ):
+            raise ValueError("context_fingerprint must be a 64-character lowercase hex digest")
+        bounded_limit = max(1, min(limit, 50_000))
+        conditions: list[str] = []
+        parameters: list[object] = []
+        if repository_path is not None:
+            conditions.append("repository_path = ?")
+            parameters.append(str(Path(repository_path).expanduser().resolve()))
+        if failure_type is not None:
+            conditions.append("failure_type = ?")
+            parameters.append(failure_type.value)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = (
+            "SELECT candidate_id, status, metadata FROM repair_candidates"
+            f"{where} ORDER BY updated_at DESC LIMIT ?"
+        )
+        parameters.append(bounded_limit)
+        with self._connection() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+
+        units: set[tuple[str, tuple[str, int], str]] = set()
+        for row in rows:
+            if CandidateStatus(row["status"]) == CandidateStatus.PROPOSED:
+                continue
+            metadata = self._load_json(row["metadata"])
+            run_id = metadata.get("autofix_run_id")
+            unit_id = (
+                run_id.strip()
+                if isinstance(run_id, str) and run_id.strip()
+                else row["candidate_id"]
+            )
+            if self._skill_context_fingerprint(metadata, unit_id) != normalized_context:
+                continue
+            for arm, evidence in (
+                ("exposed", metadata.get("retrieved_skills", [])),
+                ("control", metadata.get("withheld_skills", [])),
+            ):
+                if not isinstance(evidence, list):
+                    continue
+                for item in evidence:
+                    key = self._skill_key(item)
+                    if key is not None:
+                        units.add((unit_id, key, arm))
+
+        counts: dict[tuple[str, int], dict[str, int]] = {}
+        for _, key, arm in units:
+            counts.setdefault(key, {"exposed": 0, "control": 0})[arm] += 1
+        return {
+            key: SkillContextBalance(
+                skill_name=key[0],
+                skill_version=key[1],
+                context_fingerprint=normalized_context,
+                exposed_runs=arms["exposed"],
+                control_runs=arms["control"],
+                paired_runs=min(arms["exposed"], arms["control"]),
+                control_deficit=max(0, arms["exposed"] - arms["control"]),
+                control_surplus=max(0, arms["control"] - arms["exposed"]),
+            )
+            for key, arms in counts.items()
+        }
 
     @staticmethod
     def _beta_posterior_variance(accepted: int, observations: int) -> float:

@@ -274,6 +274,23 @@ def test_autofix_records_periodic_skill_ablation_as_control_evidence(tmp_path: P
     ledger = RepairLedger(repository / ".autoharness" / "ledger.db")
     pipeline = AutoFixPipeline(_generator(), ledger, skills)
 
+    warmup = pipeline.run(
+        _trace(),
+        repository,
+        _plan(),
+        max_attempts=1,
+        skill_ablation_interval=1,
+    )
+
+    assert warmup.recommendation.skills.matches[0].skill.name == "historical_score_repair"
+    assert warmup.recommendation.withheld_skills == []
+    assert warmup.recommendation.ablation_decision is not None
+    assert warmup.recommendation.ablation_decision.control_deficit_skills == 0
+    assert warmup.recommendation.ablation_decision.selected_skill_name is None
+    warmup_decision = warmup.evolution.candidate.metadata["skill_ablation_decision"]
+    assert warmup_decision["eligible_skills"] == 1
+    assert "collect exposure" in warmup_decision["reason"]
+
     control = pipeline.run(
         _trace(),
         repository,
@@ -285,26 +302,20 @@ def test_autofix_records_periodic_skill_ablation_as_control_evidence(tmp_path: P
     assert control.recommendation.skills.matches == []
     assert len(control.recommendation.context_fingerprint or "") == 64
     assert control.recommendation.withheld_skills[0].skill_name == "historical_score_repair"
-    assert control.recommendation.withheld_skills[0].experiment_index == 0
+    assert control.recommendation.withheld_skills[0].experiment_index == 1
     withheld = control.evolution.candidate.metadata["withheld_skills"][0]
     assert withheld["name"] == "historical_score_repair"
     assert withheld["original_rank"] == 1
+    assert withheld["exposed_runs_before"] == 1
+    assert withheld["control_runs_before"] == 0
+    assert withheld["control_deficit_before"] == 1
+    assert withheld["selection_policy"] == "matched_context_deficit"
     assert control.evolution.candidate.metadata["skill_context_fingerprint"] == (
         control.recommendation.context_fingerprint
     )
-
-    exposed = pipeline.run(
-        _trace(),
-        repository,
-        _plan(),
-        max_attempts=1,
-        skill_ablation_interval=0,
-    )
-    assert exposed.recommendation.skills.matches[0].skill.name == "historical_score_repair"
-    assert exposed.recommendation.context_fingerprint == control.recommendation.context_fingerprint
-    retrieved = exposed.evolution.candidate.metadata["retrieved_skills"][0]
-    assert retrieved["comparison_mode"] == "no_context_overlap"
-    assert retrieved["matched_contexts"] == 0
+    decision = control.evolution.candidate.metadata["skill_ablation_decision"]
+    assert decision["selected_skill_name"] == "historical_score_repair"
+    assert decision["control_deficit_skills"] == 1
     stats = ledger.skill_outcomes(repository_path=repository)[("historical_score_repair", 1)]
     assert stats.observations == 1
     assert stats.accepted == 1
@@ -344,11 +355,16 @@ def test_autofix_rotates_skill_ablation_and_preserves_quarantine_probes(tmp_path
 
     first = pipeline.run(_trace(), repository, _plan(), max_attempts=1, skill_ablation_interval=1)
     second = pipeline.run(_trace(), repository, _plan(), max_attempts=1, skill_ablation_interval=1)
+    third = pipeline.run(_trace(), repository, _plan(), max_attempts=1, skill_ablation_interval=1)
 
-    assert first.recommendation.withheld_skills[0].skill_name == "a_repair"
+    assert first.recommendation.withheld_skills == []
+    assert first.recommendation.ablation_decision is not None
+    assert first.recommendation.ablation_decision.control_deficit_skills == 0
     assert second.recommendation.withheld_skills[0].skill_name == "b_repair"
-    assert first.recommendation.withheld_skills[0].experiment_index == 0
+    assert third.recommendation.withheld_skills[0].skill_name == "a_repair"
     assert second.recommendation.withheld_skills[0].experiment_index == 1
+    assert third.recommendation.withheld_skills[0].experiment_index == 2
+    assert third.recommendation.withheld_skills[0].control_deficit_before == 2
 
 
 def test_autofix_safe_default_verifies_without_promoting(tmp_path: Path) -> None:
@@ -758,6 +774,11 @@ def test_autofix_quarantines_harmful_skill_and_recovers_it_through_probes(
     first_match = first_probe.recommendation.skills.matches[0]
     assert first_match.quarantine_probe
     assert first_probe.recommendation.withheld_skills == []
+    assert first_probe.recommendation.ablation_decision is not None
+    assert first_probe.recommendation.ablation_decision.eligible_skills == 0
+    probe_decision = first_probe.evolution.candidate.metadata["skill_ablation_decision"]
+    assert probe_decision["control_deficit_skills"] == 0
+    assert "No non-probe Skill" in probe_decision["reason"]
     assert first_match.health.status == SkillHealthStatus.QUARANTINED
     retrieved = first_probe.evolution.candidate.metadata["retrieved_skills"][0]
     assert retrieved["health"] == SkillHealthStatus.QUARANTINED.value

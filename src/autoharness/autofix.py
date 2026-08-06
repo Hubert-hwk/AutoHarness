@@ -28,6 +28,8 @@ from autoharness.models import (
     ProviderSelection,
     RepairExperience,
     SkillAblation,
+    SkillAblationDecision,
+    SkillContextBalance,
     SkillRecommendationResult,
 )
 from autoharness.registry import SkillRecommender
@@ -159,6 +161,15 @@ class AutoFixPipeline:
             recommendation,
             run_sequence=run_sequence,
             interval=skill_ablation_interval,
+            balances=(
+                self.ledger.skill_context_balances(
+                    recommendation.context_fingerprint,
+                    repository_path=source,
+                    failure_type=evidence_failure_type,
+                )
+                if recommendation.context_fingerprint is not None
+                else {}
+            ),
         )
         failure_type = recommendation.diagnosis.failure_type
         self.ledger.record_autofix_diagnosis(run.run_id, failure_type)
@@ -408,33 +419,97 @@ class AutoFixPipeline:
         *,
         run_sequence: int,
         interval: int,
+        balances: dict[tuple[str, int], SkillContextBalance],
     ) -> SkillRecommendationResult:
         if interval == 0 or run_sequence % interval != 0:
             return recommendation
+        context_fingerprint = recommendation.context_fingerprint
+        if context_fingerprint is None:
+            return recommendation
+        experiment_index = run_sequence // interval - 1
         eligible = [
             (index, match)
             for index, match in enumerate(recommendation.skills.matches)
             if not match.quarantine_probe
         ]
         if not eligible:
-            return recommendation
-        experiment_index = run_sequence // interval - 1
+            return recommendation.model_copy(
+                update={
+                    "ablation_decision": SkillAblationDecision(
+                        repository_run_sequence=run_sequence,
+                        interval=interval,
+                        experiment_index=experiment_index,
+                        context_fingerprint=context_fingerprint,
+                        eligible_skills=0,
+                        control_deficit_skills=0,
+                        reason="No non-probe Skill was eligible for matched-context ablation.",
+                    )
+                }
+            )
+        deficit_pool = [
+            (index, match, balances.get((match.skill.name, match.skill.version)))
+            for index, match in eligible
+            if balances.get((match.skill.name, match.skill.version)) is not None
+            and balances[(match.skill.name, match.skill.version)].control_deficit > 0
+        ]
+        if not deficit_pool:
+            return recommendation.model_copy(
+                update={
+                    "ablation_decision": SkillAblationDecision(
+                        repository_run_sequence=run_sequence,
+                        interval=interval,
+                        experiment_index=experiment_index,
+                        context_fingerprint=context_fingerprint,
+                        eligible_skills=len(eligible),
+                        control_deficit_skills=0,
+                        reason=(
+                            "Skipped ablation because this context has no Skill with more "
+                            "exposed runs than controls; collect exposure before spending "
+                            "control budget."
+                        ),
+                    )
+                }
+            )
+        maximum_deficit = max(
+            balance.control_deficit for _, _, balance in deficit_pool if balance is not None
+        )
         rotation_pool = sorted(
-            eligible,
+            [
+                (index, match, balance)
+                for index, match, balance in deficit_pool
+                if balance is not None and balance.control_deficit == maximum_deficit
+            ],
             key=lambda item: (item[1].skill.name, item[1].skill.version, item[1].path),
         )
-        selected_index, selected = rotation_pool[experiment_index % len(rotation_pool)]
+        selected_index, selected, selected_balance = rotation_pool[
+            experiment_index % len(rotation_pool)
+        ]
         ablation = SkillAblation(
             skill_name=selected.skill.name,
             skill_version=selected.skill.version,
             path=selected.path,
             original_rank=selected_index + 1,
             experiment_index=experiment_index,
+            exposed_runs_before=selected_balance.exposed_runs,
+            control_runs_before=selected_balance.control_runs,
+            control_deficit_before=selected_balance.control_deficit,
             health=selected.health,
             reason=(
-                f"Withheld from repository run {run_sequence} as controlled Skill ablation "
-                f"experiment {experiment_index}"
+                f"Withheld from repository run {run_sequence} to reduce matched-context "
+                f"control deficit {selected_balance.control_deficit} in experiment "
+                f"{experiment_index}"
             ),
+        )
+        decision = SkillAblationDecision(
+            repository_run_sequence=run_sequence,
+            interval=interval,
+            experiment_index=experiment_index,
+            context_fingerprint=context_fingerprint,
+            eligible_skills=len(eligible),
+            control_deficit_skills=len(deficit_pool),
+            selected_skill_name=selected.skill.name,
+            selected_skill_version=selected.skill.version,
+            reason=ablation.reason,
         )
         remaining = [
             match
@@ -445,6 +520,7 @@ class AutoFixPipeline:
             update={
                 "skills": recommendation.skills.model_copy(update={"matches": remaining}),
                 "withheld_skills": [*recommendation.withheld_skills, ablation],
+                "ablation_decision": decision,
             }
         )
 
@@ -466,6 +542,11 @@ class AutoFixPipeline:
             "autofix_attempt": attempt_number,
             "autofix_max_attempts": max_attempts,
             "skill_context_fingerprint": recommendation.context_fingerprint,
+            "skill_ablation_decision": (
+                recommendation.ablation_decision.model_dump(mode="json", exclude_none=True)
+                if recommendation.ablation_decision is not None
+                else None
+            ),
             "generator_provider": generated.provider,
             "generation_duration_ms": generated.duration_ms,
             "prior_candidate_ids": [
@@ -512,6 +593,10 @@ class AutoFixPipeline:
                     "path": item.path,
                     "original_rank": item.original_rank,
                     "experiment_index": item.experiment_index,
+                    "exposed_runs_before": item.exposed_runs_before,
+                    "control_runs_before": item.control_runs_before,
+                    "control_deficit_before": item.control_deficit_before,
+                    "selection_policy": item.selection_policy,
                     "health": item.health.status.value if item.health is not None else None,
                     "health_basis": (
                         item.health.decision_basis.value if item.health is not None else None

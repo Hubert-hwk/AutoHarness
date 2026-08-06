@@ -35,6 +35,8 @@ pipeline that work locally without requiring an LLM or external service.
   harm and preserve statistically supported controlled benefit.
 - Matched-context Skill experiments that prevent unrelated repairs within one failure type from
   serving as each other's counterfactual controls.
+- Deficit-aware matched-pair scheduling that warms up new contexts, prioritizes missing controls,
+  and never spends control budget on an unpaired or already balanced Skill context.
 - Pluggable patch generation through an isolated command protocol or the built-in OpenAI
   Responses API provider.
 - Explainable adaptive generator portfolios that learn from repository-scoped run outcomes,
@@ -193,11 +195,14 @@ relevance. Every match reports accepted, rejected, and failed counts, posterior 
 adjustment, and textual reasons. This is associative evidence, not a causal claim that a
 retrieved Skill alone produced the result.
 
-AutoFix also withholds one relevant, non-probe Skill every 20 repository runs by default. The
-generator receives the remaining context, while the withheld Skill, original rank, health, and
-experiment index are persisted in candidate metadata. Set `--skill-ablation-interval N` to change
-the cadence or `0` to disable it. Holdouts rotate deterministically across eligible matches and
-never suppress a quarantine recovery probe.
+Every 20 repository runs by default, AutoFix evaluates whether to withhold one relevant, non-probe
+Skill. It spends that control opportunity only when the same Skill and context have more exposed
+runs than controls. A context's first scheduled occurrence therefore remains exposed as warm-up;
+later opportunities prioritize the largest control deficit and rotate deterministically across
+ties. The generator receives the remaining context, while the decision, withheld Skill, original
+rank, pre-selection balance, and experiment index are persisted in candidate metadata. Set
+`--skill-ablation-interval N` to change the cadence or `0` to disable it. Quarantine recovery probes
+are never suppressed.
 
 `skill-outcomes` deduplicates retries from the same AutoFix run before aggregating exposed and
 control arms. New AutoFix runs also persist a SHA-256 context fingerprint derived from failure type,
@@ -557,7 +562,8 @@ uv run pytest
   recovery probes, while periodic ablation supplies a cautious controlled lift estimate. Skill
   outcome learning is isolated by diagnosed failure type, and approximate lift intervals now drive
   conservative controlled health decisions. Context matching now removes unrelated counterfactuals;
-  balanced pair scheduling and harness optimization are next.
+  deficit-aware pair scheduling warms up new contexts and spends controls only where matched
+  evidence is missing. Direct harness optimization is next.
 
 ## License
 

@@ -7,6 +7,9 @@ from autoharness.models import (
     AgentTrace,
     FailureType,
     Skill,
+    SkillAblation,
+    SkillAblationDecision,
+    SkillContextBalance,
     SkillHealthBasis,
     SkillHealthStatus,
     SkillOutcomeStats,
@@ -401,6 +404,43 @@ def test_skill_outcome_rejects_inconsistent_comparison_counts() -> None:
             confidence=1 / 6,
             score_adjustment=0.1,
             comparison_exposed_observations=1,
+        )
+
+
+def test_skill_ablation_models_reject_inconsistent_audit_counts() -> None:
+    with pytest.raises(ValueError, match="pre-ablation run balance"):
+        SkillAblation(
+            skill_name="repair",
+            skill_version=1,
+            path="repair.yaml",
+            original_rank=1,
+            experiment_index=0,
+            exposed_runs_before=2,
+            control_runs_before=0,
+            control_deficit_before=1,
+            reason="test invalid provenance",
+        )
+    with pytest.raises(ValueError, match="recorded together"):
+        SkillAblationDecision(
+            repository_run_sequence=1,
+            interval=1,
+            experiment_index=0,
+            context_fingerprint="a" * 64,
+            eligible_skills=1,
+            control_deficit_skills=1,
+            selected_skill_name="repair",
+            reason="test incomplete selection",
+        )
+    with pytest.raises(ValueError, match="derived from exposed and control runs"):
+        SkillContextBalance(
+            skill_name="repair",
+            skill_version=1,
+            context_fingerprint="a" * 64,
+            exposed_runs=2,
+            control_runs=1,
+            paired_runs=0,
+            control_deficit=1,
+            control_surplus=0,
         )
 
 
