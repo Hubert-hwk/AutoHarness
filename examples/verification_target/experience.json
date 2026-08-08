@@ -1,0 +1,9 @@
+{
+  "title": "Improve example score",
+  "failure_type": "reasoning_failure",
+  "trigger_terms": ["low score", "benchmark regression"],
+  "root_cause": "The configured example value was too low.",
+  "repair_steps": ["Increase the value after validating the patch candidate"],
+  "validation_steps": ["Run the score benchmark and require a non-regressing result"],
+  "affected_components": ["value"]
+}

@@ -5,7 +5,14 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 
 from autoharness import __version__
-from autoharness.models import AgentTrace, AnalysisRequest, AnalysisResult, FailureDiagnosis
+from autoharness.models import (
+    AgentTrace,
+    AnalysisRequest,
+    AnalysisResult,
+    EvaluationRequest,
+    EvaluationResult,
+    FailureDiagnosis,
+)
 from autoharness.service import AutoHarness
 
 app = FastAPI(
@@ -38,3 +45,8 @@ def analyze(request: AnalysisRequest | AgentTrace) -> AnalysisResult:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/v1/evaluate", response_model=EvaluationResult)
+def evaluate(request: EvaluationRequest) -> EvaluationResult:
+    return service.evaluate(request.baseline, request.candidate, request.policy)

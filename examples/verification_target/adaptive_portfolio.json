@@ -1,0 +1,22 @@
+{
+  "type": "adaptive",
+  "name": "example-portfolio",
+  "minimum_trials": 1,
+  "exploration_weight": 0.35,
+  "providers": [
+    {
+      "type": "command",
+      "name": "example-feedback-generator",
+      "argv": ["python", "adaptive_generator.py"],
+      "timeout_seconds": 30,
+      "max_patch_bytes": 65536
+    },
+    {
+      "type": "command",
+      "name": "example-command-generator",
+      "argv": ["python", "generator.py"],
+      "timeout_seconds": 30,
+      "max_patch_bytes": 65536
+    }
+  ]
+}
